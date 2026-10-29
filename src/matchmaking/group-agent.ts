@@ -31,14 +31,15 @@ export class GroupAgent<A = unknown> {
   logGroupUpdates: boolean
   logPollingUpdates: boolean
 
-  readonly monitor: Observable<MonitorResponseDTO> = new Observable({} as MonitorResponseDTO)
-  readonly group: Observable<GroupUpResponseDTO> = new Observable({} as GroupUpResponseDTO)
+  readonly monitor: Observable<MonitorResponseDTO> = new Observable()
+  readonly group: Observable<GroupUpResponseDTO> = new Observable()
 
   private api: Api | null = null
   private ping: Ping
   private timers = new Timers()
   private _owner = false
   private polling = false
+  private session = 0
 
   constructor(options: GroupAgentOptions) {
     this.baseUrl = options.baseUrl
@@ -170,6 +171,7 @@ export class GroupAgent<A = unknown> {
 
   stopMatchmaking(onCompleted?: () => void): void {
     this.polling = false
+    this.session++
 
     const current = this.group.current
     if (current?.group_id == null) {
@@ -217,11 +219,12 @@ export class GroupAgent<A = unknown> {
     this.group.clear()
   }
 
-  private startPollingGroup(consecutiveErrors = 0): void {
+  private startPollingGroup(consecutiveErrors = 0, session = this.session): void {
     if (!this.polling) {
       if (this.logPollingUpdates) this.group._notify('polling stopped')
       return
     }
+    if (session !== this.session) return
 
     if (this.logPollingUpdates) {
       this.group._notify(`polling [${consecutiveErrors + 1}/${this.maxConsecutivePollingErrors}]`)
@@ -232,6 +235,7 @@ export class GroupAgent<A = unknown> {
       current.group_id,
       current.member_id,
       (group) => {
+        if (session !== this.session) return
         if (this.group.current === null || group.status === this.group.current.status) {
           this.delayPollingGroup()
           return
@@ -244,6 +248,7 @@ export class GroupAgent<A = unknown> {
           : this.delayPollingGroup()
       },
       (error, response) => {
+        if (session !== this.session) return
         if (consecutiveErrors + 1 > this.maxConsecutivePollingErrors) {
           this.group._error(`polling failed, reached maximum retries\n${error}`)
           this.stopMatchmaking()
@@ -260,14 +265,18 @@ export class GroupAgent<A = unknown> {
   }
 
   private delayPollingGroup(consecutiveErrors = 0): void {
+    const session = this.session
     this.timers.delay(jitter(this.pollingBackoffSeconds), () =>
-      this.startPollingGroup(consecutiveErrors),
+      this.startPollingGroup(consecutiveErrors, session),
     )
   }
 
   private expireGroup(): void {
     this.polling = false
-    this.timers.delay(this.removeGroupSeconds, () => this.group._update(null, 'removed'))
+    const session = this.session
+    this.timers.delay(this.removeGroupSeconds, () => {
+      if (session === this.session) this.group._update(null, 'removed')
+    })
   }
 
   private onStopMatchmakingError(
@@ -277,6 +286,7 @@ export class GroupAgent<A = unknown> {
   ): void {
     if (response.status === 409) {
       this.group._notify('abandon failed (match found)', ObservableActionType.Warn)
+      if (onCompleted) this.group._notify('restart skipped (match found)', ObservableActionType.Warn)
       this.polling = true
       this.startPollingGroup()
       return

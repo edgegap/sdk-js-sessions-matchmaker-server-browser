@@ -76,14 +76,39 @@ describe('GroupAgent', () => {
   })
 
   describe('group lifecycle', () => {
-    it('upstream: reports a conflict on the very first createGroup without abandon', async () => {
+    it('creates the first group without abandon, and reports a conflict on the second', async () => {
       const { agent, group } = start()
+      expect(agent.group.current).toBeNull()
 
       agent.createGroup(REQUEST)
-      await vi.runOnlyPendingTimersAsync()
+      await vi.advanceTimersByTimeAsync(0)
+      agent.createGroup(REQUEST)
 
-      expect(group).toEqual([[T.Error, 'conflict, abandon and restart']])
-      expect(server.count('POST /groups')).toBe(0)
+      expect(group).toEqual([
+        [T.Update, 'created'],
+        [T.Error, 'conflict, abandon and restart'],
+      ])
+      expect(server.count('POST /groups')).toBe(1)
+    })
+
+    it('uses the configured request timeout', async () => {
+      server.on('POST /groups', () => ({ status: 201, body: member() }))
+      const fetchMock = vi.mocked(fetch)
+      const respond = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation((input, init) =>
+        String(input).endsWith('/groups')
+          ? new Promise((_resolve, reject) =>
+              init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))),
+            )
+          : respond(input, init),
+      )
+      const { agent } = start({ requestTimeoutSeconds: 5 })
+
+      agent.createGroup(REQUEST)
+      await vi.advanceTimersByTimeAsync(4999)
+      expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/groups'))).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1 + 1050)
+      expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/groups'))).toHaveLength(2)
     })
 
     it('creates a group, polls status changes, and removes it after the host is assigned', async () => {
@@ -269,7 +294,7 @@ describe('GroupAgent', () => {
       expect(server.count('GET /groups/g1/members/m1')).toBe(0)
     })
 
-    it('upstream: resumes polling on 409 and drops the follow-up action', async () => {
+    it('resumes polling on 409 and reports the skipped follow-up action', async () => {
       server.on('DELETE /groups/g1', { status: 409, body: { message: 'matched' } })
       const { agent, group } = await created()
       const onCompleted = vi.fn()
@@ -277,9 +302,22 @@ describe('GroupAgent', () => {
       agent.stopMatchmaking(onCompleted)
       await vi.advanceTimersByTimeAsync(0)
 
-      expect(group.at(-1)).toEqual([T.Warn, 'abandon failed (match found)'])
+      expect(group.slice(-2)).toEqual([
+        [T.Warn, 'abandon failed (match found)'],
+        [T.Warn, 'restart skipped (match found)'],
+      ])
       expect(server.count('GET /groups/g1/members/m1')).toBe(1)
       expect(onCompleted).not.toHaveBeenCalled()
+    })
+
+    it('resumes polling on 409 without a skip warning when there is no follow-up', async () => {
+      server.on('DELETE /groups/g1', { status: 409, body: { message: 'matched' } })
+      const { agent, group } = await created()
+
+      agent.stopMatchmaking()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(group.at(-1)).toEqual([T.Warn, 'abandon failed (match found)'])
     })
 
     it('clears the group on 404 and completes', async () => {
@@ -339,8 +377,8 @@ describe('GroupAgent', () => {
     })
   })
 
-  describe('upstream timing bugs', () => {
-    it('upstream: a new group within the backoff window runs two polling loops', async () => {
+  describe('session timing', () => {
+    it('runs a single polling loop for a new group within the backoff window', async () => {
       const { agent } = start()
       agent.createGroup(REQUEST, true)
       await vi.advanceTimersByTimeAsync(0)
@@ -349,10 +387,41 @@ describe('GroupAgent', () => {
 
       await vi.advanceTimersByTimeAsync(1050 * 3)
 
-      expect(server.count('GET /groups/g1/members/m1')).toBe(6)
+      expect(server.count('GET /groups/g1/members/m1')).toBe(3)
     })
 
-    it('upstream: a stale expiry removes a newer group', async () => {
+    it('ignores a poll response that arrives after the group was replaced', async () => {
+      let release: () => void = () => {}
+      let polls = 0
+      server.on('GET /groups/g1/members/m1', () => ({
+        status: 200,
+        body: member({ status: ++polls === 1 ? 'SEARCHING' : null }),
+      }))
+      const fetchMock = vi.mocked(fetch)
+      const respond = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementationOnce(respond).mockImplementationOnce(respond)
+      fetchMock.mockImplementationOnce(
+        (input, init) => new Promise((resolve) => (release = () => resolve(respond(input, init)))),
+      )
+      const { agent, group } = start()
+      await vi.advanceTimersByTimeAsync(0)
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(1050)
+
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+      release()
+      await vi.advanceTimersByTimeAsync(1050 * 3)
+
+      expect(group).toEqual([
+        [T.Update, 'created'],
+        [T.Update, 'abandoned'],
+        [T.Update, 'created'],
+      ])
+      expect(server.count('GET /groups/g1/members/m1')).toBe(4)
+    })
+
+    it('does not let a stale expiry remove a newer group', async () => {
       server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'HOST_ASSIGNED' }) })
       const { agent, group } = start()
       agent.createGroup(REQUEST, true)
@@ -363,8 +432,8 @@ describe('GroupAgent', () => {
       agent.createGroup(REQUEST, true)
       await vi.advanceTimersByTimeAsync(30_000)
 
-      expect(group.at(-1)).toEqual([T.Update, 'removed'])
-      expect(agent.group.current).toBeNull()
+      expect(group).not.toContainEqual([T.Update, 'removed'])
+      expect(agent.group.current?.group_id).toBe('g2')
     })
   })
 

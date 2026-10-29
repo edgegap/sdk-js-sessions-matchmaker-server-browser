@@ -19,7 +19,7 @@ export class Observable<T> {
   private _lastError: string | null = null
   private subscribers: Subscriber<T>[] = []
 
-  constructor(initial: T) {
+  constructor(initial: T | null = null) {
     this._current = initial
   }
 
