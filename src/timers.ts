@@ -1,7 +1,9 @@
 export class Timers {
   private handles = new Set<ReturnType<typeof setTimeout>>()
+  private disposed = false
 
   delay(seconds: number, callback: () => void): void {
+    if (this.disposed) return
     const handle = setTimeout(() => {
       this.handles.delete(handle)
       callback()
@@ -17,7 +19,8 @@ export class Timers {
     }
   }
 
-  clear(): void {
+  dispose(): void {
+    this.disposed = true
     this.handles.forEach(clearTimeout)
     this.handles.clear()
   }

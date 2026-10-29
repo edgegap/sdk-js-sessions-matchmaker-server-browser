@@ -392,6 +392,18 @@ describe('ServerAgent', () => {
     })
   })
 
+  it('leaves no timers when disposed from the creation handler', async () => {
+    const { agent } = start({}, { targetTeamSize: 1 })
+    agent.backfills.subscribe((_obs, _type, _message, event) => {
+      if (event.code === 'created') agent.dispose()
+    })
+    agent.addBackfills()
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('dispose stops polling and grace timers', async () => {
     const { agent, events } = start({ t1: ticket('t1') })
     agent.addBackfills()

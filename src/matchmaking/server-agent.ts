@@ -186,7 +186,7 @@ export class ServerAgent<A = unknown> {
 
   dispose(): void {
     this.polling = false
-    this.timers.clear()
+    this.timers.dispose()
     this.api?.dispose()
     this.monitor.clear()
     this.backfills.clear()

@@ -505,4 +505,17 @@ describe('GroupAgent', () => {
     expect(server.count('GET /groups/g1/members/m1')).toBe(0)
     expect(group).toEqual([[T.Update, 'created']])
   })
+
+  it('leaves no timers when disposed from the host assignment handler', async () => {
+    server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'HOST_ASSIGNED' }) })
+    const { agent } = start()
+    agent.group.subscribe((obs) => {
+      if (obs.current?.status === 'HOST_ASSIGNED') agent.dispose()
+    })
+    agent.createGroup(REQUEST, true)
+
+    await vi.advanceTimersByTimeAsync(1050)
+
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })
