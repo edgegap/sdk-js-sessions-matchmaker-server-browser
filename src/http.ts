@@ -39,8 +39,13 @@ export const parseResponse =
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
-const parseSeconds = (value: string): number =>
-  /^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?\s*$/i.test(value) ? Number(value) : 0
+const parseRetryAfter = (value: string): number => {
+  if (/^\s*\d+(\.\d+)?\s*$/.test(value)) return Number(value)
+  const date = Date.parse(value)
+  return Number.isNaN(date) ? 0 : Math.max(0, (date - Date.now()) / 1000)
+}
+
+const isRetryable = (status: number): boolean => status === 0 || status === 429 || status >= 500
 
 export class RetryParameters {
   static readonly defaultBackoffSeconds: () => number = () => jitter(1)
@@ -129,20 +134,13 @@ export class SafeHttpRequest {
     if (this.disposed) return
 
     const onRetryableError: HttpError = (error, response) => {
-      if (response.headers === null) return onError(error, response)
-
-      const retryAfter = response.headers.get('Retry-After')
-      if (
-        retry.remainingAttempts <= 0 ||
-        (retryAfter === null && response.status !== 429 && response.status < 500)
-      ) {
-        return onError(error, response)
-      }
+      if (retry.remainingAttempts <= 0 || !isRetryable(response.status)) return onError(error, response)
 
       Logger.warn(
         `Retrying (${retry.remainingAttempts}/${retry.maxAttempts}) ${method} ${url}.\n${error}`,
       )
       retry.remainingAttempts--
+      const retryAfter = response.headers?.get('Retry-After') ?? null
       this.send(
         method,
         url,
@@ -151,19 +149,19 @@ export class SafeHttpRequest {
         onSuccess,
         onError,
         retry,
-        retryAfter === null ? undefined : jitter(parseSeconds(retryAfter)),
+        retryAfter === null ? retry.backoffSeconds() : jitter(parseRetryAfter(retryAfter)),
       )
     }
 
     const request = () =>
       this.fetch(method, url, authToken, body, onSuccess, onRetryableError)
 
-    if (retry.remainingAttempts >= retry.maxAttempts) return request()
+    if (delaySeconds === undefined) return request()
 
     const timer = setTimeout(() => {
       this.timers.delete(timer)
       request()
-    }, (delaySeconds ?? retry.backoffSeconds()) * 1000)
+    }, delaySeconds * 1000)
     this.timers.add(timer)
   }
 

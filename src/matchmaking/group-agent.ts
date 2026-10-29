@@ -198,7 +198,7 @@ export class GroupAgent<A = unknown> {
     if (!this.baseUrl?.trim()) throw new Error('BaseUrl not declared.')
     if (!this.authToken?.trim()) throw new Error('AuthToken not declared.')
 
-    this.api = new Api(this.authToken, this.baseUrl)
+    this.api = new Api(this.authToken, this.baseUrl, this.requestTimeoutSeconds)
 
     Logger.subscribeLogger(this.monitor, 'MM', 'Monitor')
     this.monitor.subscribe(onMonitorUpdate)

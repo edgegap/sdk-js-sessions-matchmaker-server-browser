@@ -107,20 +107,34 @@ describe('SafeHttpRequest', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('upstream: retries any status that carries Retry-After', async () => {
+  it('ignores Retry-After on client errors', async () => {
+    fetchMock.mockResolvedValue(respond(409, '', { 'Retry-After': '1' }))
+    const onError = vi.fn()
+
+    new SafeHttpRequest().get(URL, 'token', vi.fn(), onError)
+    await vi.runAllTimersAsync()
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('HTTP 409'), expect.objectContaining({ status: 409 }))
+  })
+
+  it('waits until an HTTP-date Retry-After', async () => {
+    vi.setSystemTime(new Date('2026-10-21T07:28:00Z'))
     fetchMock
-      .mockResolvedValueOnce(respond(409, '', { 'Retry-After': '1' }))
+      .mockResolvedValueOnce(respond(503, '', { 'Retry-After': 'Wed, 21 Oct 2026 07:28:04 GMT' }))
       .mockResolvedValueOnce(respond(200))
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn())
-    await vi.runAllTimersAsync()
-
+    await vi.advanceTimersByTimeAsync(4049)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('upstream: parses an HTTP-date Retry-After as 0 seconds', async () => {
+  it('retries an HTTP-date Retry-After in the past right away', async () => {
+    vi.setSystemTime(new Date('2026-10-21T07:28:00Z'))
     fetchMock
-      .mockResolvedValueOnce(respond(503, '', { 'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT' }))
+      .mockResolvedValueOnce(respond(503, '', { 'Retry-After': 'Wed, 21 Oct 2026 07:27:00 GMT' }))
       .mockResolvedValueOnce(respond(200))
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn())
@@ -129,15 +143,27 @@ describe('SafeHttpRequest', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('upstream: reports network failures without retrying', async () => {
+  it('retries network failures, then reports', async () => {
     fetchMock.mockRejectedValue(new TypeError('fetch failed'))
     const onError = vi.fn()
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), onError)
     await vi.runAllTimersAsync()
 
-    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(onError).toHaveBeenCalledOnce()
     expect(onError).toHaveBeenCalledWith('HTTP 0: fetch failed\n', { status: 0, headers: null })
+  })
+
+  it('retries timed out requests', async () => {
+    fetchMock.mockImplementationOnce(hangUntilAborted).mockResolvedValueOnce(respond(200, 'ok'))
+    const onSuccess = vi.fn()
+
+    new SafeHttpRequest().get(URL, 'token', onSuccess, vi.fn())
+    await vi.advanceTimersByTimeAsync(3000 + 1050)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(onSuccess).toHaveBeenCalledWith('ok', expect.objectContaining({ status: 200 }))
   })
 
   it('times out after 3s by default, or the given timeout', async () => {
@@ -145,8 +171,8 @@ describe('SafeHttpRequest', () => {
     const onDefault = vi.fn()
     const onCustom = vi.fn()
 
-    new SafeHttpRequest().get(URL, 'token', vi.fn(), onDefault)
-    new SafeHttpRequest(5).get(URL, 'token', vi.fn(), onCustom)
+    new SafeHttpRequest().get(URL, 'token', vi.fn(), onDefault, new RetryParameters(0))
+    new SafeHttpRequest(5).get(URL, 'token', vi.fn(), onCustom, new RetryParameters(0))
     await vi.advanceTimersByTimeAsync(3000)
     expect(onDefault).toHaveBeenCalledWith('HTTP 0: Request timeout\n', { status: 0, headers: null })
     expect(onCustom).not.toHaveBeenCalled()
@@ -187,15 +213,13 @@ describe('SafeHttpRequest', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
-  it('upstream: delays the first request when remaining attempts are below the maximum', async () => {
+  it('sends the first request right away when remaining attempts are below the maximum', async () => {
     fetchMock.mockResolvedValue(respond(200))
     const retry = Object.assign(new RetryParameters(), { maxAttempts: 10 })
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn(), retry)
     await vi.advanceTimersByTimeAsync(0)
-    expect(fetchMock).not.toHaveBeenCalled()
 
-    await vi.advanceTimersByTimeAsync(1050)
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 

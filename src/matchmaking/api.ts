@@ -22,8 +22,8 @@ export class Api {
   readonly authToken: string
   readonly baseUrl: string
 
-  constructor(authToken: string, baseUrl: string) {
-    this.request = new SafeHttpRequest()
+  constructor(authToken: string, baseUrl: string, requestTimeoutSeconds = 0) {
+    this.request = new SafeHttpRequest(requestTimeoutSeconds)
     this.authToken = authToken
     this.baseUrl = baseUrl
   }
