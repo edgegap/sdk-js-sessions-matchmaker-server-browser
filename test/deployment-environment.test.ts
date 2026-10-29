@@ -126,12 +126,19 @@ describe('DeploymentEnvironment.fromEnv', () => {
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it('upstream: throws when the port mapping is missing', () => {
-    expect(() => DeploymentEnvironment.fromEnv({ ARBITRIUM_REQUEST_ID: 'abc123' })).toThrow(TypeError)
+  it('warns once and continues without a port mapping, for local runs', () => {
+    const env = DeploymentEnvironment.fromEnv({ ARBITRIUM_REQUEST_ID: 'abc123', PATH: '/usr/bin' })
+
+    expect(env.requestId).toBe('abc123')
+    expect(env.portMapping).toBeNull()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Missing variable 'ARBITRIUM_PORTS_MAPPING'"))
   })
 
-  it('upstream: throws when the port mapping is malformed', () => {
-    expect(() => DeploymentEnvironment.fromEnv({ ARBITRIUM_PORTS_MAPPING: '{' })).toThrow(TypeError)
+  it('warns once and continues with a malformed port mapping', () => {
+    expect(DeploymentEnvironment.fromEnv({ ARBITRIUM_PORTS_MAPPING: '{' }).portMapping).toBeNull()
+    expect(DeploymentEnvironment.fromEnv({ ARBITRIUM_PORTS_MAPPING: '{}' }).portMapping).toBeNull()
     expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Couldn't parse variable 'ARBITRIUM_PORTS_MAPPING'"))
   })
 })

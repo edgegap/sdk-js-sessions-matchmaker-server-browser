@@ -38,7 +38,7 @@ const fromEnv = <A>(env: Env): MatchEnvironment<A> => {
     else if (key === 'MM_INTERSECTION') result.intersection = tryParseEnvVariableJSON(key, value)
     else if (key.startsWith('MM_TICKET_')) {
       const ticket = tryParseEnvVariableJSON<InjectedTicketDTO<A>>(key, value)
-      result.tickets[ticket!.id] = ticket!
+      if (ticket?.id != null) result.tickets[ticket.id] = ticket
     }
   })
 

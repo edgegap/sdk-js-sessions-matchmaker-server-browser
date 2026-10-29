@@ -109,14 +109,18 @@ const fromEnv = (env: Env): DeploymentEnvironment => {
     else if (key === 'ARBITRIUM_DEPLOYMENT_LOCATION')
       result.location = tryParseEnvVariableJSON<LocationDTO>(key, value)
     else if (key === 'ARBITRIUM_PORTS_MAPPING')
-      result.portMapping = tryParseEnvVariableJSON<{ ports: Record<string, PortMappingDTO> }>(
-        key,
-        value,
-      )!.ports
+      result.portMapping =
+        tryParseEnvVariableJSON<{ ports?: Record<string, PortMappingDTO> }>(key, value)?.ports ?? null
   })
 
+  if (env['ARBITRIUM_PORTS_MAPPING'] === undefined) {
+    Logger.warn(
+      "Edgegap Env | Missing variable 'ARBITRIUM_PORTS_MAPPING', port mapping is unavailable. This is expected when running outside an Edgegap deployment.",
+    )
+  }
+
   const fqdn = result.requestId ? `${result.requestId}.pr.edgegap.net` : ''
-  Object.values(result.portMapping!).forEach((port) => {
+  Object.values(result.portMapping ?? {}).forEach((port) => {
     port.link ??= `${fqdn}:${port.external}`
   })
 

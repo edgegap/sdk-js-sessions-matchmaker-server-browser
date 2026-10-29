@@ -60,8 +60,15 @@ describe('MatchEnvironment.fromEnv', () => {
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it('upstream: throws when a ticket fails to parse', () => {
-    expect(() => MatchEnvironment.fromEnv({ MM_TICKET_t1: '{' })).toThrow(TypeError)
+  it('warns and skips a ticket that fails to parse', () => {
+    const env = MatchEnvironment.fromEnv({
+      MM_TICKET_t1: '{',
+      MM_TICKET_t2: '{"id":"t2","created_at":"2026-10-29T12:00:00Z","player_ip":"1.2.3.4","group_id":"g","team_id":"t","attributes":{}}',
+    })
+
+    expect(Object.keys(env.tickets)).toEqual(['t2'])
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Couldn't parse variable 'MM_TICKET_t1'"))
   })
 })
 
