@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { type Observable, ObservableActionType as T } from '../../src/index.ts'
+import { type Observable, type ObservableEvent, ObservableActionType as T } from '../../src/index.ts'
 import {
   type BackfillAttributes,
   GroupAgent,
@@ -12,8 +12,8 @@ const baseUrl = process.env['EDGEGAP_MM_URL'] ?? ''
 const authToken = process.env['EDGEGAP_MM_TOKEN'] ?? ''
 const allowDeploy = process.env['EDGEGAP_MM_ALLOW_DEPLOY'] === '1'
 
-const until = <V>(
-  observable: Observable<V>,
+const until = <V, E extends ObservableEvent>(
+  observable: Observable<V, E>,
   predicate: (type: number, message: string) => boolean,
   timeoutSeconds = 20,
 ): Promise<string> =>

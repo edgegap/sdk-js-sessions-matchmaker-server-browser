@@ -6,7 +6,7 @@ import {
   type InjectedTicketDTO,
   ServerAgent,
 } from '../../src/matchmaking/index.ts'
-import { mockServer, recordEvents, silenceConsole } from '../helpers.ts'
+import { mockServer, recordEventObjects, recordEvents, silenceConsole } from '../helpers.ts'
 
 const BASE = 'https://mm.example.com'
 const MONITOR = { status: 'HEALTHY', message: 'ok', healthy_components: 6, unhealthy_components: 0 }
@@ -147,6 +147,24 @@ describe('ServerAgent', () => {
     expect(agent.backfills.current).toEqual({})
   })
 
+  it('passes backfill and ticket IDs as event fields', async () => {
+    server.on('GET /backfills/b1', {
+      status: 200,
+      body: backfill('b1', { status: 'ASSIGNED', assigned_ticket: ticket('t2') }),
+    })
+    const { agent } = start({ t1: ticket('t1') })
+    const events = recordEventObjects(agent.backfills)
+    agent.addBackfills()
+
+    await vi.advanceTimersByTimeAsync(1050)
+
+    expect(events).toEqual([
+      { code: 'created', backfillId: 'b1' },
+      { code: 'assigned', backfillId: 'b1', ticketId: 't2' },
+      { code: 'removed', backfillId: 'b1' },
+    ])
+  })
+
   it('emits the assigned backfill as a new state', async () => {
     server.on('GET /backfills/b1', {
       status: 200,
@@ -271,8 +289,15 @@ describe('ServerAgent', () => {
       const { agent, events } = start({}, { targetTeamSize: 1 })
       agent.addBackfills()
 
+      const objects = recordEventObjects(agent.backfills)
       await vi.advanceTimersByTimeAsync(1050)
 
+      expect(objects).toContainEqual({
+        code: 'polling_failed',
+        backfillId: 'b1',
+        reason: 'error',
+        detail: expect.stringContaining('400'),
+      })
       expect(events).toEqual([
         [T.Update, 'created [b1]'],
         [T.Error, 'polling failed [b1]'],

@@ -1,4 +1,4 @@
-import { type Observable, ObservableActionType } from './observable.ts'
+import { type Observable, ObservableActionType, type ObservableEvent } from './observable.ts'
 
 const toStringOrNull = (value: unknown): string => {
   if (value === null || value === undefined) return 'null'
@@ -44,8 +44,8 @@ export const Logger: {
   formatUpdateMessage: typeof formatUpdateMessage
   formatErrorMessage: typeof formatErrorMessage
   toStringOrNull: typeof toStringOrNull
-  subscribeLogger: <T>(
-    observable: Observable<T>,
+  subscribeLogger: <T, E extends ObservableEvent>(
+    observable: Observable<T, E>,
     service: string,
     subject: string,
     enabled?: boolean,

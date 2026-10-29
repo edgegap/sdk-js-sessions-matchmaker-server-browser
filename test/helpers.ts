@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { Observable } from '../src/index.ts'
+import type { Observable, ObservableEvent } from '../src/index.ts'
 
 export interface Reply {
   status: number
@@ -60,9 +60,17 @@ export const mockServer = (baseUrl: string) => {
   }
 }
 
-export const recordEvents = <T>(observable: Observable<T>): Array<[number, string]> => {
+export const recordEvents = <T, E extends ObservableEvent>(
+  observable: Observable<T, E>,
+): Array<[number, string]> => {
   const events: Array<[number, string]> = []
   observable.subscribe((_obs, type, message) => events.push([type, message.split('\n')[0]!]))
+  return events
+}
+
+export const recordEventObjects = <T, E extends ObservableEvent>(observable: Observable<T, E>): E[] => {
+  const events: E[] = []
+  observable.subscribe((_obs, _type, _message, event) => events.push(event))
   return events
 }
 

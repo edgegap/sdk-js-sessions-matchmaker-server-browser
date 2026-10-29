@@ -6,6 +6,7 @@ import { type Ping, stubPing } from '../ping.ts'
 import { Timers, jitter } from '../timers.ts'
 import { Api } from './api.ts'
 import type { GroupUpRequestDTO, GroupUpResponseDTO, MonitorResponseDTO } from './dtos.ts'
+import { type GroupEvent, type MonitorEvent, groupMessages, monitorMessages } from './events.ts'
 
 export interface GroupAgentOptions {
   baseUrl: string
@@ -31,8 +32,8 @@ export class GroupAgent<A = unknown> {
   logGroupUpdates: boolean
   logPollingUpdates: boolean
 
-  readonly monitor: Observable<MonitorResponseDTO> = new Observable()
-  readonly group: Observable<GroupUpResponseDTO> = new Observable()
+  readonly monitor: Observable<MonitorResponseDTO, MonitorEvent> = new Observable(null, monitorMessages)
+  readonly group: Observable<GroupUpResponseDTO, GroupEvent> = new Observable(null, groupMessages)
 
   private api: Api | null = null
   private ping: Ping
@@ -60,8 +61,10 @@ export class GroupAgent<A = unknown> {
   status(): void {
     this.api!.getMonitor(
       (monitor) =>
-        this.monitor._update(monitor, monitor.status.toLowerCase() === 'healthy' ? 'healthy' : 'unhealthy'),
-      (error) => this.monitor._error(`get monitor failed (unexpected error)\n${error}`, null),
+        this.monitor._update(monitor, {
+          code: monitor.status.toLowerCase() === 'healthy' ? 'healthy' : 'unhealthy',
+        }),
+      (error) => this.monitor._error({ code: 'monitor_failed', detail: error }, null),
     )
   }
 
@@ -70,7 +73,7 @@ export class GroupAgent<A = unknown> {
       this.api!.getBeacons(
         (beacons) => resolve(beacons),
         (error, response) => {
-          this.monitor._error(`get beacons failed\n${error}`)
+          this.monitor._error({ code: 'beacons_failed', detail: error })
           reject(new HttpRequestError(error, response))
         },
       ),
@@ -93,12 +96,12 @@ export class GroupAgent<A = unknown> {
 
   resumeMatchmaking(group: GroupUpResponseDTO, abandon = false): void {
     if (this.group.current !== null && !abandon) {
-      this.group._error('conflict, abandon and restart')
+      this.group._error({ code: 'conflict' })
       return
     }
 
     this.stopMatchmaking(() => {
-      this.group._update(group, 'resumed')
+      this.group._update(group, { code: 'resumed' })
       this.polling = true
       this.startPollingGroup()
     })
@@ -106,7 +109,7 @@ export class GroupAgent<A = unknown> {
 
   createGroup(group: GroupUpRequestDTO<A>, abandon = false): void {
     if (this.group.current !== null && !abandon) {
-      this.group._error('conflict, abandon and restart')
+      this.group._error({ code: 'conflict' })
       return
     }
 
@@ -114,19 +117,19 @@ export class GroupAgent<A = unknown> {
       this.api!.createGroup(
         group,
         (created) => {
-          this.group._update(created, 'created')
+          this.group._update(created, { code: 'created' })
           this._owner = true
           this.polling = true
           this.delayPollingGroup()
         },
-        (error) => this.group._error(`group create failed\n${error}`),
+        (error) => this.group._error({ code: 'create_failed', detail: error }),
       ),
     )
   }
 
   joinGroup(member: GroupUpRequestDTO<A>, groupId: string, abandon = false): void {
     if (this.group.current !== null && !abandon) {
-      this.group._error('conflict, abandon and restart')
+      this.group._error({ code: 'conflict' })
       return
     }
 
@@ -135,15 +138,13 @@ export class GroupAgent<A = unknown> {
         member,
         groupId,
         (joined) => {
-          this.group._update(joined, 'joined')
+          this.group._update(joined, { code: 'joined' })
           this._owner = false
           this.polling = true
           this.delayPollingGroup()
         },
         (error, response) =>
-          this.group._error(
-            response.status === 404 ? `group not found\n${error}` : `group join failed\n${error}`,
-          ),
+          this.group._error({ code: response.status === 404 ? 'not_found' : 'join_failed', detail: error }),
       ),
     )
   }
@@ -151,7 +152,7 @@ export class GroupAgent<A = unknown> {
   setReady(isReady: boolean): void {
     const current = this.group.current
     if (current === null) {
-      this.group._error('group not found')
+      this.group._error({ code: 'not_found' })
       return
     }
 
@@ -159,12 +160,12 @@ export class GroupAgent<A = unknown> {
       current.group_id,
       current.member_id,
       isReady,
-      (group) => this.group._update(group, `member updated [${isReady ? 'True' : 'False'}]`),
+      (group) => this.group._update(group, { code: 'member_updated', isReady }),
       (error, response) => {
-        if (response.status === 404) this.group._error(`group not found\n${error}`)
+        if (response.status === 404) this.group._error({ code: 'not_found', detail: error })
         else if (response.status === 409)
-          this.group._notify('member update failed', ObservableActionType.Warn)
-        else this.group._error(`group update failed\n${error}`)
+          this.group._notify({ code: 'member_update_failed' }, ObservableActionType.Warn)
+        else this.group._error({ code: 'update_failed', detail: error })
       },
     )
   }
@@ -180,7 +181,7 @@ export class GroupAgent<A = unknown> {
     }
 
     const onAbandoned = () => {
-      this.group._update(null, 'abandoned')
+      this.group._update(null, { code: 'abandoned' })
       onCompleted?.()
     }
     const onAbandonError = (error: string, response: HttpResponse) =>
@@ -194,8 +195,8 @@ export class GroupAgent<A = unknown> {
   }
 
   initialize(
-    onMonitorUpdate: Subscriber<MonitorResponseDTO>,
-    onGroupUpdate: Subscriber<GroupUpResponseDTO>,
+    onMonitorUpdate: Subscriber<MonitorResponseDTO, MonitorEvent>,
+    onGroupUpdate: Subscriber<GroupUpResponseDTO, GroupEvent>,
   ): void {
     if (!this.baseUrl?.trim()) throw new Error('BaseUrl not declared.')
     if (!this.authToken?.trim()) throw new Error('AuthToken not declared.')
@@ -221,13 +222,17 @@ export class GroupAgent<A = unknown> {
 
   private startPollingGroup(consecutiveErrors = 0, session = this.session): void {
     if (!this.polling) {
-      if (this.logPollingUpdates) this.group._notify('polling stopped')
+      if (this.logPollingUpdates) this.group._notify({ code: 'polling_stopped' })
       return
     }
     if (session !== this.session) return
 
     if (this.logPollingUpdates) {
-      this.group._notify(`polling [${consecutiveErrors + 1}/${this.maxConsecutivePollingErrors}]`)
+      this.group._notify({
+        code: 'polling',
+        attempt: consecutiveErrors + 1,
+        maxAttempts: this.maxConsecutivePollingErrors,
+      })
     }
 
     const current = this.group.current!
@@ -241,7 +246,7 @@ export class GroupAgent<A = unknown> {
           return
         }
 
-        this.group._update(group, `group updated [${group.status ?? ''}]`)
+        this.group._update(group, { code: 'updated', status: group.status })
         const status = this.group.current!.status
         status === 'HOST_ASSIGNED' || status === 'CANCELLED'
           ? this.expireGroup()
@@ -250,7 +255,7 @@ export class GroupAgent<A = unknown> {
       (error, response) => {
         if (session !== this.session) return
         if (consecutiveErrors + 1 > this.maxConsecutivePollingErrors) {
-          this.group._error(`polling failed, reached maximum retries\n${error}`)
+          this.group._error({ code: 'polling_failed', reason: 'max_retries', detail: error })
           this.stopMatchmaking()
           return
         }
@@ -258,7 +263,7 @@ export class GroupAgent<A = unknown> {
           this.delayPollingGroup(consecutiveErrors + 1)
           return
         }
-        this.group._error(`polling failed\n${error}`)
+        this.group._error({ code: 'polling_failed', reason: 'error', detail: error })
         this.stopMatchmaking()
       },
     )
@@ -275,7 +280,7 @@ export class GroupAgent<A = unknown> {
     this.polling = false
     const session = this.session
     this.timers.delay(this.removeGroupSeconds, () => {
-      if (session === this.session) this.group._update(null, 'removed')
+      if (session === this.session) this.group._update(null, { code: 'removed' })
     })
   }
 
@@ -285,15 +290,15 @@ export class GroupAgent<A = unknown> {
     onCompleted?: () => void,
   ): void {
     if (response.status === 409) {
-      this.group._notify('abandon failed (match found)', ObservableActionType.Warn)
-      if (onCompleted) this.group._notify('restart skipped (match found)', ObservableActionType.Warn)
+      this.group._notify({ code: 'abandon_failed', reason: 'match_found' }, ObservableActionType.Warn)
+      if (onCompleted) this.group._notify({ code: 'restart_skipped' }, ObservableActionType.Warn)
       this.polling = true
       this.startPollingGroup()
       return
     }
 
-    if (response.status === 404) this.group._update(null, 'abandon failed (not found)')
-    else this.group._error(`abandon failed\n${error}`, null)
+    if (response.status === 404) this.group._update(null, { code: 'abandon_failed', reason: 'not_found' })
+    else this.group._error({ code: 'abandon_failed', reason: 'error', detail: error }, null)
 
     onCompleted?.()
   }

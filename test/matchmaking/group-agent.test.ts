@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { type BeaconDTO, HttpRequestError, ObservableActionType as T } from '../../src/index.ts'
 import { GroupAgent, type GroupUpResponseDTO, presets } from '../../src/matchmaking/index.ts'
-import { mockServer, recordEvents, silenceConsole } from '../helpers.ts'
+import { mockServer, recordEventObjects, recordEvents, silenceConsole } from '../helpers.ts'
 
 const BASE = 'https://mm.example.com'
 const MONITOR = { status: 'HEALTHY', message: 'ok', healthy_components: 6, unhealthy_components: 0 }
@@ -247,7 +247,7 @@ describe('GroupAgent', () => {
   describe('setReady', () => {
     it('reports a missing group locally', () => {
       const { agent, group } = start()
-      agent.group._update(null, 'reset')
+      agent.group._update(null, { code: 'removed' })
 
       agent.setReady(true)
 
@@ -308,6 +308,17 @@ describe('GroupAgent', () => {
       ])
       expect(server.count('GET /groups/g1/members/m1')).toBe(1)
       expect(onCompleted).not.toHaveBeenCalled()
+    })
+
+    it('passes the abandon failure reason as an event field', async () => {
+      server.on('DELETE /groups/g1', { status: 409, body: { message: 'matched' } })
+      const { agent } = await created()
+      const events = recordEventObjects(agent.group)
+
+      agent.stopMatchmaking(() => {})
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(events).toEqual([{ code: 'abandon_failed', reason: 'match_found' }, { code: 'restart_skipped' }])
     })
 
     it('resumes polling on 409 without a skip warning when there is no follow-up', async () => {

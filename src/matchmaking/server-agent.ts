@@ -8,6 +8,7 @@ import type {
   InjectedTicketDTO,
   MonitorResponseDTO,
 } from './dtos.ts'
+import { type BackfillEvent, type MonitorEvent, backfillMessages, monitorMessages } from './events.ts'
 
 export type Backfills<A> = Record<string, BackfillResponseDTO<A>>
 
@@ -48,8 +49,8 @@ export class ServerAgent<A = unknown> {
   logBackfillUpdates: boolean
   logPollingUpdates: boolean
 
-  readonly monitor: Observable<MonitorResponseDTO> = new Observable()
-  readonly backfills: Observable<Backfills<A>> = new Observable<Backfills<A>>({})
+  readonly monitor: Observable<MonitorResponseDTO, MonitorEvent> = new Observable(null, monitorMessages)
+  readonly backfills: Observable<Backfills<A>, BackfillEvent> = new Observable({}, backfillMessages)
   readonly assignments: Record<string, InjectedTicketDTO<A>> = {}
 
   private api: Api | null = null
@@ -103,8 +104,10 @@ export class ServerAgent<A = unknown> {
   status(): void {
     this.api!.getMonitor(
       (monitor) =>
-        this.monitor._update(monitor, monitor.status.toLowerCase() === 'healthy' ? 'healthy' : 'unhealthy'),
-      (error) => this.monitor._error(`get monitor failed (unexpected error)\n${error}`, null),
+        this.monitor._update(monitor, {
+          code: monitor.status.toLowerCase() === 'healthy' ? 'healthy' : 'unhealthy',
+        }),
+      (error) => this.monitor._error({ code: 'monitor_failed', detail: error }, null),
     )
   }
 
@@ -130,21 +133,21 @@ export class ServerAgent<A = unknown> {
 
   abandonBackfill(backfillId: string, onCompleted?: () => void): void {
     if (!(backfillId in this.backfills.current!)) {
-      this.backfills._notify(`abandon failed (not found) [${backfillId}]`, ObservableActionType.Warn)
+      this.backfills._notify({ code: 'abandon_failed', backfillId, reason: 'not_found' }, ObservableActionType.Warn)
       return
     }
 
     this.api!.deleteBackfill(
       backfillId,
       () => {
-        this.backfills._notify(`abandoned [${backfillId}]`)
+        this.backfills._notify({ code: 'abandoned', backfillId })
         this.removeBackfill(this.backfills.current!, backfillId, onCompleted)
       },
       (error, response) => {
         this.backfills._notify(
           response.status === 404
-            ? `abandon failed (not found) [${backfillId}]`
-            : `abandon failed [${backfillId}]\n${error}`,
+            ? { code: 'abandon_failed', backfillId, reason: 'not_found' }
+            : { code: 'abandon_failed', backfillId, reason: 'error', detail: error },
           ObservableActionType.Warn,
         )
         this.removeBackfill(this.backfills.current!, backfillId, onCompleted)
@@ -162,8 +165,8 @@ export class ServerAgent<A = unknown> {
 
   initialize(
     tickets: Record<string, InjectedTicketDTO<A>>,
-    onMonitorUpdate: Subscriber<MonitorResponseDTO>,
-    onBackfillUpdate: Subscriber<Backfills<A>>,
+    onMonitorUpdate: Subscriber<MonitorResponseDTO, MonitorEvent>,
+    onBackfillUpdate: Subscriber<Backfills<A>, BackfillEvent>,
   ): void {
     if (!this.baseUrl?.trim()) throw new Error('BaseUrl not declared.')
     if (!this.authToken?.trim()) throw new Error('AuthToken not declared.')
@@ -206,9 +209,9 @@ export class ServerAgent<A = unknown> {
   private removeBackfill(backfills: Backfills<A>, backfillId: string, onCompleted?: () => void): void {
     if (backfillId in backfills) {
       const { [backfillId]: _removed, ...remaining } = backfills
-      this.backfills._update(remaining, `removed [${backfillId}]`)
+      this.backfills._update(remaining, { code: 'removed', backfillId })
     } else {
-      this.backfills._notify(`remove failed (not found) [${backfillId}]`, ObservableActionType.Warn)
+      this.backfills._notify({ code: 'remove_failed', backfillId }, ObservableActionType.Warn)
     }
 
     onCompleted?.()
@@ -216,7 +219,7 @@ export class ServerAgent<A = unknown> {
 
   private startNewBackfill(): void {
     if (Object.keys(this.assignments).length + this.backfillCount() >= this.targetTeamSize) {
-      this.backfills._error('maximum capacity currently reached')
+      this.backfills._error({ code: 'capacity_reached' })
       return
     }
 
@@ -227,7 +230,7 @@ export class ServerAgent<A = unknown> {
         this.creatingBackfills--
         this.backfills._update(
           { ...this.backfills.current, [backfill.id]: backfill },
-          `created [${backfill.id}]`,
+          { code: 'created', backfillId: backfill.id },
         )
 
         if (!this.polling && this.backfillCount() > 0) {
@@ -237,14 +240,14 @@ export class ServerAgent<A = unknown> {
       },
       (error) => {
         this.creatingBackfills--
-        this.backfills._error(`create failed\n${error}`)
+        this.backfills._error({ code: 'create_failed', detail: error })
       },
     )
   }
 
   private startPollingBackfills(consecutiveErrors = 0, failedIds: string[] = []): void {
     if (!this.polling) {
-      this.backfills._notify('polling stopped')
+      this.backfills._notify({ code: 'polling_stopped' })
       return
     }
 
@@ -252,7 +255,9 @@ export class ServerAgent<A = unknown> {
       this.polling = false
       failedIds
         .filter((id) => id in this.backfills.current!)
-        .forEach((id) => this.backfills._error(`polling failed (reached maximum retries) [${id}]`))
+        .forEach((backfillId) =>
+          this.backfills._error({ code: 'polling_failed', backfillId, reason: 'max_retries' }),
+        )
       this.abandonAllBackfills()
       return
     }
@@ -260,12 +265,16 @@ export class ServerAgent<A = unknown> {
     const current = Object.values(this.backfills.current!)
     if (current.length === 0) {
       this.polling = false
-      this.backfills._notify('polling stopped')
+      this.backfills._notify({ code: 'polling_stopped' })
       return
     }
 
     if (this.logPollingUpdates) {
-      this.backfills._notify(`polling [${consecutiveErrors + 1}/${this.maxConsecutivePollingErrors}]`)
+      this.backfills._notify({
+        code: 'polling',
+        attempt: consecutiveErrors + 1,
+        maxAttempts: this.maxConsecutivePollingErrors,
+      })
     }
 
     const failed: string[] = []
@@ -283,7 +292,7 @@ export class ServerAgent<A = unknown> {
             this.assign(ticket)
             this.backfills._update(
               { ...this.backfills.current, [backfill.id]: backfill },
-              `assigned [${backfill.id}]`,
+              { code: 'assigned', backfillId: backfill.id, ticketId: ticket.id },
             )
             this.removeBackfill(this.backfills.current!, backfill.id)
           }
@@ -292,10 +301,13 @@ export class ServerAgent<A = unknown> {
         (error, response) => {
           failed.push(b.id)
           if (response.status === 404) {
-            this.backfills._notify(`polling failed (not found) [${b.id}]`, ObservableActionType.Warn)
+            this.backfills._notify(
+              { code: 'polling_failed', backfillId: b.id, reason: 'not_found' },
+              ObservableActionType.Warn,
+            )
             this.removeBackfill(this.backfills.current!, b.id, () => this.startNewBackfill())
           } else if (response.status !== 429 && response.status < 500) {
-            this.backfills._error(`polling failed [${b.id}]\n${error}`)
+            this.backfills._error({ code: 'polling_failed', backfillId: b.id, reason: 'error', detail: error })
             this.abandonBackfill(b.id, () => this.startNewBackfill())
           }
           finished()

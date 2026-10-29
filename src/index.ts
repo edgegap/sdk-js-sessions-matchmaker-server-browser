@@ -1,4 +1,10 @@
-export { Observable, ObservableActionType, type Subscriber } from './observable.ts'
+export {
+  type EventMessages,
+  Observable,
+  ObservableActionType,
+  type ObservableEvent,
+  type Subscriber,
+} from './observable.ts'
 export { Logger } from './logger.ts'
 export {
   SafeHttpRequest,

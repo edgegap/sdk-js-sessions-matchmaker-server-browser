@@ -37,10 +37,10 @@ describe('Logger', () => {
     const observable = new Observable<{ id: string } | null>(null)
     Logger.subscribeLogger(observable, 'SB', 'Instance')
 
-    observable._update({ id: 'a' }, 'created')
-    observable._notify('heartbeat')
-    observable._notify('conflict', ObservableActionType.Warn)
-    observable._error('failed')
+    observable._update({ id: 'a' }, { code: 'created' })
+    observable._notify({ code: 'heartbeat' })
+    observable._notify({ code: 'conflict' }, ObservableActionType.Warn)
+    observable._error({ code: 'failed' })
 
     expect(console.log.mock.calls).toEqual([
       [`ℹ️ Edgegap SB | Instance.changed('created')\ncurrent: {"id":"a"}\nprevious: null`],
@@ -57,8 +57,8 @@ describe('Logger', () => {
     const observable = new Observable(0)
     Logger.subscribeLogger(observable, 'SB', 'Instance', false)
 
-    observable._update(1, 'changed')
-    observable._error('failed')
+    observable._update(1, { code: 'changed' })
+    observable._error({ code: 'failed' })
 
     expect(console.log).not.toHaveBeenCalled()
     expect(console.error).not.toHaveBeenCalled()

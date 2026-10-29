@@ -134,8 +134,7 @@ The service accepts these fields, and the Unity SDK sends them, but the Matchmak
 
 ## API and abstraction improvements
 
-- [ ] **Structured event codes.** Handlers currently branch on message strings, for example `message.Contains("discovery failed")` and `message.StartsWith("enqueued")`. Emit `{ type, code, message, detail }`, where `code` is a typed union such as `'group.created' | 'group.joined' | ...`, and keep `message` for logs. This also stops code and docs from drifting apart on message text.
-- [ ] **TypeScript template-literal message types.** As a cheaper step toward structured codes, type `message` as a union of the known templates, so handlers get autocomplete and typo checking.
+- [x] **Structured events.** Unity handlers branch on message strings, for example `message.Contains("discovery failed")`, and parse IDs out of `[...]` suffixes. Subscribers get a fourth argument, a typed event (`GroupEvent`, `BackfillEvent`, `MonitorEvent`) with a `code`, its parameters (`backfillId`, `ticketId`, `reason`, ...), and the error `detail`. Messages are built from the event, so they stay identical to Unity, and handlers that branch on `code` don't break when the wording changes. The Server Browser branch needs the same change when it's rebased.
 - [ ] **Promise and async-iterator surface.** Phase 1 keeps the observer callbacks. Add `await agent.nextAssignment()` and `for await (const ev of agent.group)` for game loops.
 - [ ] **Interop adapters.** Offer opt-in adapters for RxJS (`from(observable)`), Svelte stores, React `useSyncExternalStore`, and signals. The observable contract already works with `useSyncExternalStore`, because `subscribe` returns an unsubscribe function.
 - [ ] **Immutable state updates.** Never mutate `Current` in place, so `previous`/`current` diffs are always meaningful.

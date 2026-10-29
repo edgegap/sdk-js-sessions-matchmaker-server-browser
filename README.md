@@ -8,7 +8,7 @@ JavaScript/TypeScript SDK for Edgegap [Matchmaking](https://docs.edgegap.com/lea
 
 ### Approach
 
-Phase 1 is a faithful port: the same agents, the same observable callback signature, and the exact event message strings, so the existing docs event tables still apply. The port deviates only where the JS platform forces it (see "Forced by platform" in [ROADMAP.md](ROADMAP.md)). Unity bugs are reproduced as-is and pinned by tests, except the ones already fixed, which are checked off in [ROADMAP.md](ROADMAP.md).
+Phase 1 is a faithful port: the same agents, the same observable callback signature, and the exact event message strings, so the existing docs event tables still apply. Subscribers also get a fourth argument, a typed event object such as `{ code: 'polling_failed', backfillId, reason: 'max_retries' }`, so handlers can branch on `code` and read parameters without parsing the message. The port deviates only where the JS platform forces it (see "Forced by platform" in [ROADMAP.md](ROADMAP.md)). Unity bugs are reproduced as-is and pinned by tests, except the ones already fixed, which are checked off in [ROADMAP.md](ROADMAP.md).
 
 ### Scope
 
@@ -31,7 +31,7 @@ New in JS: `getConnectionUrl(assignment, portName)` builds `wss://{link}` or `ws
 | --- | --- |
 | `MonoBehaviour` handler and coroutines | Plain classes using `setTimeout`, plus `dispose()` to clear timers, abort requests, and drop subscribers |
 | `UnityWebRequest` / `SafeHttpRequest` | Global `fetch` with `AbortController` timeouts, using the same retry and backoff rules (`RetryParameters`, `Retry-After`) |
-| `UnityEvent` in `Observable<T>` | Built-in observable with `current`, `previous`, `error`, and `subscribe(fn)`, which returns an unsubscribe function |
+| `UnityEvent` in `Observable<T>` | Built-in `Observable<T, E>` with `current`, `previous`, `error`, and `subscribe((observable, type, message, event) => ...)`, which returns an unsubscribe function. `E` is the event union, for example `GroupEvent` or `BackfillEvent` |
 | `ObservableActionType` enum | `const` object plus a union type (`Log = 0`, `Update = 100`, `Warn = 200`, `Error = 300`) |
 | Newtonsoft and `[JsonProperty]` DTO classes | TypeScript interfaces using the real snake_case JSON keys, with no mapping layer |
 | Generic DTO parameters (`A`, metadata types) | TypeScript generics for ticket attributes and instance/slot metadata |
