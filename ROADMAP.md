@@ -16,7 +16,8 @@ References like `GroupClient.cs:350` point to the Unity SDK source at v3.5.6. "O
 - **`GroupClient` is renamed `GroupAgent`.** This mirrors `ServerAgent` and `ClientAgent`. The old name was legacy.
 - **The legacy ticket `Client` is not ported.** It is `[Obsolete]` in Unity in favor of the group-up flow, and so are its `Assignment` observable and group-ticket helpers. `TicketsRequestDTO` survives only as the base shape of group-up requests. The matching `Api` methods (`/tickets`, `/group-tickets`) are not ported either.
 - **`player_ip` is never sent by `GroupAgent`.** The Matchmaker takes the player's IP from the group create request. The field stays in the request type (it's nullable in the spec) for server-to-server use, but it's omitted when unset, where Newtonsoft would serialize it as `null`.
-- **Upstream bugs are reproduced as-is unless fixed.** Unfixed bugs are pinned by a parity test and listed below. Fixed bugs are checked off in their list, covered by a test of the fixed behavior, and added to [Backport to Unity SDK](#backport-to-unity-sdk).
+- **Upstream bugs are reproduced as-is unless fixed.** Unfixed bugs are pinned by a parity test and listed below. Fixed bugs are checked off in their list and covered by a test of the fixed behavior.
+- **Event messages follow the Unity code.** Where the docs disagree with the code on message text or action types, the SDK emits what the Unity code emits.
 
 ## Service constraints that shape the design
 
@@ -67,7 +68,7 @@ Phase 2, once beacons support HTTP:
 
 ## Upstream issues found during the port review
 
-These behaviors exist in Unity v3.5.6. Unchecked items are reproduced as-is in JS, and each has a parity test that pins the current behavior, so a fix shows up as a deliberate test change. Checked items are fixed in JS and listed in [Backport to Unity SDK](#backport-to-unity-sdk).
+These behaviors exist in Unity v3.5.6. Unchecked items are reproduced as-is in JS, and each has a parity test that pins the current behavior, so a fix shows up as a deliberate test change. Checked items are fixed in JS.
 
 ### Shared
 
@@ -122,22 +123,6 @@ The service accepts these fields, and the Unity SDK sends them, but the Matchmak
 - [ ] Add `request_id` to `TicketAssignmentResponse`, as used in `attributes.assignment` of `POST /backfills`.
 - [ ] Add `team_id` to `BackfillTicketMember`.
 
-## Documentation drift
-
-The Unity code and the docs ([matchmaking](https://docs.edgegap.com/unity/matchmaking#customization), [server browser](https://docs.edgegap.com/unity/server-browser#customization), [matchmaker in-depth](https://docs.edgegap.com/learn/matchmaking/matchmaker-in-depth)) disagree. Phase 1 emits what the code emits, and the SDK's polling and retry behavior is the reference. Decide whether to fix the code or the docs for event messages:
-
-| Docs | Code |
-| --- | --- |
-| Action type `Notify` | `ObservableActionType.Log` |
-| "Group Client" | `GroupAgent` in the JS SDK |
-| `abandon failed (already matched)` (group) | `abandon failed (match found)` |
-| `member update failed` as `Error` | `Warn` on `409`, `group update failed` as `Error` otherwise |
-| `remove failed [{backfill}]` | `remove failed (not found) [{backfill}]` |
-| (undocumented, matchmaking) | `maximum capacity currently reached`, `abandon failed (not found) [{id}]`, and in JS only, `restart skipped (match found)` |
-| (undocumented, server browser client) | `instance list retrieval failed`, `cache deleted` |
-| Poll memberships every 3–5s (docs update pending) | 1s polling backoff |
-| Increasing waits between `429` retries, e.g. 1s, 5s, 10s (docs update pending) | Fixed backoff |
-
 ## Jitter
 
 - [ ] **Proportional jitter (approved for phase 2).** Every delay today is `base + random(0, 0.1s)`: polling (1s), retries (1s), backfill polling (1s), heartbeats (10s). The jitter is a constant 100ms, no matter how long the delay is. Clients that start in sync stay in sync: a lobby that readies up together, a scaling policy deploying many servers at once, or every client retrying after the same `Retry-After`. With 100ms jitter on a 10s heartbeat (1%), 50 servers deployed together still send their heartbeats in tight bursts every cycle. Scaling the jitter with the delay spreads them across the interval. The bounds depend on what the delay guarantees:
@@ -145,11 +130,11 @@ The Unity code and the docs ([matchmaking](https://docs.edgegap.com/unity/matchm
   - **`Retry-After`:** `base × random(1.0, 1.2)`, so a client never retries before the server asked it to.
   - **Heartbeats:** `base × random(0.8, 1.0)`, so jitter never pushes a heartbeat closer to the instance expiry.
 
-  This changes only the timing distribution, not the average request rate. It can also be backported to Unity as-is.
+  This changes only the timing distribution, not the average request rate.
 
 ## API and abstraction improvements
 
-- [ ] **Structured event codes.** Handlers currently branch on message strings, for example `message.Contains("discovery failed")` and `message.StartsWith("enqueued")`. Emit `{ type, code, message, detail }`, where `code` is a typed union such as `'group.created' | 'group.joined' | ...`, and keep `message` for logs. This also rules out the documentation-drift class of bugs.
+- [ ] **Structured event codes.** Handlers currently branch on message strings, for example `message.Contains("discovery failed")` and `message.StartsWith("enqueued")`. Emit `{ type, code, message, detail }`, where `code` is a typed union such as `'group.created' | 'group.joined' | ...`, and keep `message` for logs. This also stops code and docs from drifting apart on message text.
 - [ ] **TypeScript template-literal message types.** As a cheaper step toward structured codes, type `message` as a union of the known templates, so handlers get autocomplete and typo checking.
 - [ ] **Promise and async-iterator surface.** Phase 1 keeps the observer callbacks. Add `await agent.nextAssignment()` and `for await (const ev of agent.group)` for game loops.
 - [ ] **Interop adapters.** Offer opt-in adapters for RxJS (`from(observable)`), Svelte stores, React `useSyncExternalStore`, and signals. The observable contract already works with `useSyncExternalStore`, because `subscribe` returns an unsubscribe function.
@@ -174,28 +159,3 @@ The Unity code and the docs ([matchmaking](https://docs.edgegap.com/unity/matchm
 - [ ] **Local mock server.** A mock Matchmaker and Server Browser for offline development, reusing the phase 1 test fixtures.
 - [ ] **AI-assistant docs.** Ship an `llms.txt` and agent rules for vibe-coding tools, so generated code uses the SDK and doesn't call raw APIs.
 - [ ] **Token safety.** Client tokens ship in client builds by design. Server tokens must not. Detect a server token used in a browser (a heuristic on the token scope or prefix, if one exists) and warn loudly.
-
-## Backport to Unity SDK
-
-Fixes and improvements made here that also apply to the Unity SDK. Check an item off when the Unity change ships, and link the Unity PR.
-
-Already different in JS phase 1, because the platform forced it:
-
-- [ ] **URL-encode `$filter`/`$order` values.** `ServerBrowser/Api.cs:164`. A `&`, `#`, or `+` in a filter value breaks the query in Unity today.
-- [ ] **Report response parse failures through the error path.** Unity rethrows inside the coroutine, so polling and flush loops stop silently.
-- [ ] **Merge metadata without overwriting with value-type defaults.** In `MetadataDTO.Merge`, an unset `int`/`bool` field in an update resets the stored value to `0`/`false`. Use nullable value types in metadata DTOs, or merge only fields present in the JSON.
-- [ ] **Omit `player_ip` when unset,** rather than sending `null`. This is equivalent per the spec, so it's low priority.
-- [ ] **Type port `internal`/`external` and beacon `count` as numbers,** to match the API. Today it works only through Newtonsoft's coercion.
-- [ ] **Rename `GroupClient` to `GroupAgent`.** Breaking change, so it goes in the next major version, with an `[Obsolete]` alias in the meantime.
-- [ ] **Remove the legacy ticket `Client`.** It's already `[Obsolete]`. Next major version.
-- [ ] **Keep a custom `BackoffSeconds` across retries.** `SafeHttpRequest.cs:183,193`. Pass the `Retry-After` wait to the next attempt instead of overwriting the delegate.
-
-Fixed upstream issues (details in [Upstream issues](#upstream-issues-found-during-the-port-review)):
-
-- [ ] **HTTP:** wire `RequestTimeoutSeconds` into the Matchmaking `Api`. Retry network failures and timeouts, and retry only those, `429`, and `5xx`. Parse HTTP-date `Retry-After`. Send the first request right away regardless of `RemainingAttempts`.
-- [ ] **`Observable<T>` starts with `Current = null`.** Behavior change for code that reads `Current` before the first update.
-- [ ] **`GroupClient`:** a session counter for polling and expiry. `restart skipped (match found)` after a `409` that drops a follow-up.
-- [ ] **Backfill `ServerAgent`:** count in-flight creations, stop polling with zero backfills, emit a new map on assignment, add `[id]` to the max-retries error.
-- [ ] **Environment parsing:** don't crash on a missing port mapping, warn once listing every missing `ARBITRIUM_*` variable, and skip malformed tickets.
-
-When another item under "Upstream issues", "Jitter", or "API and abstraction improvements" ships in JS and applies to Unity, add it here.

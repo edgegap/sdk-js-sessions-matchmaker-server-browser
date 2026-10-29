@@ -2,7 +2,7 @@
 
 JavaScript/TypeScript SDK for Edgegap [Matchmaking](https://docs.edgegap.com/learn/matchmaking/matchmaker-in-depth) and [Server Browser](https://docs.edgegap.com/learn/server-browser), ported from the [Unity SDK v3.5.6](https://github.com/edgegap/sdk-unity-sessions-matchmaker-server-browser). It targets browser games (WebSocket over WSS) and their Node, Bun, or Deno game servers.
 
-> **Status:** repo setup, the shared layer, and Matchmaking are done (implementation steps 1 to 3). The Server Browser is implemented on the `server-browser` branch and waits on service-side CORS support. Decisions, known Unity issues, phase 2 candidates, and Unity backports are tracked in [ROADMAP.md](ROADMAP.md).
+> **Status:** repo setup, the shared layer, and Matchmaking are done (implementation steps 1 to 3). The Server Browser is implemented on the `server-browser` branch and waits on service-side CORS support. Decisions, known Unity issues, and phase 2 candidates are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Porting plan
 
