@@ -83,39 +83,35 @@ const fromEnv = (env: Env): DeploymentEnvironment => {
     portMapping: null,
   }
 
-  Object.entries(env).forEach(([key, value]) => {
-    if (key === 'ARBITRIUM_REQUEST_ID') result.requestId = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_HOST_ID') result.hostId = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_PUBLIC_IP') result.publicIp = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_DEPLOYMENT_TAGS')
-      result.tags = tryParseEnvVariableString(key, value)!.split(',')
-    else if (key === 'ARBITRIUM_HOST_BASE_CLOCK_FREQUENCY')
-      result.hostBaseClockFrequency = tryParseEnvVariableUInt(key, value)
-    else if (key === 'ARBITRIUM_DEPLOYMENT_VCPU_UNITS')
-      result.deploymentVcpuUnits = tryParseEnvVariableUInt(key, value)
-    else if (key === 'ARBITRIUM_DEPLOYMENT_MEMORY_MB')
-      result.deploymentMemoryMb = tryParseEnvVariableUInt(key, value)
-    else if (key === 'ARBITRIUM_DELETE_URL') result.selfStopUrl = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_DELETE_TOKEN')
-      result.selfStopToken = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_BEACON_ENABLED')
-      result.privateBeaconEnabled = tryParseEnvVariableBool(key, value)
-    else if (key === 'ARBITRIUM_HOST_BEACON_PUBLIC_IP')
-      result.beaconPublicIp = tryParseEnvVariableString(key, value)
-    else if (key === 'ARBITRIUM_HOST_BEACON_PORT_UDP_EXTERNAL')
-      result.beaconPortUdp = tryParseEnvVariableUInt(key, value)
-    else if (key === 'ARBITRIUM_HOST_BEACON_PORT_TCP_EXTERNAL')
-      result.beaconPortTcp = tryParseEnvVariableUInt(key, value)
-    else if (key === 'ARBITRIUM_DEPLOYMENT_LOCATION')
-      result.location = tryParseEnvVariableJSON<LocationDTO>(key, value)
-    else if (key === 'ARBITRIUM_PORTS_MAPPING')
-      result.portMapping =
-        tryParseEnvVariableJSON<{ ports?: Record<string, PortMappingDTO> }>(key, value)?.ports ?? null
-  })
+  const parsers = new Map<string, (key: string, value: string | undefined) => void>([
+    ['ARBITRIUM_REQUEST_ID', (k, v) => (result.requestId = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_HOST_ID', (k, v) => (result.hostId = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_PUBLIC_IP', (k, v) => (result.publicIp = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_DEPLOYMENT_TAGS', (k, v) => (result.tags = tryParseEnvVariableString(k, v)?.split(',') ?? null)],
+    ['ARBITRIUM_HOST_BASE_CLOCK_FREQUENCY', (k, v) => (result.hostBaseClockFrequency = tryParseEnvVariableUInt(k, v))],
+    ['ARBITRIUM_DEPLOYMENT_VCPU_UNITS', (k, v) => (result.deploymentVcpuUnits = tryParseEnvVariableUInt(k, v))],
+    ['ARBITRIUM_DEPLOYMENT_MEMORY_MB', (k, v) => (result.deploymentMemoryMb = tryParseEnvVariableUInt(k, v))],
+    ['ARBITRIUM_DELETE_URL', (k, v) => (result.selfStopUrl = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_DELETE_TOKEN', (k, v) => (result.selfStopToken = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_BEACON_ENABLED', (k, v) => (result.privateBeaconEnabled = tryParseEnvVariableBool(k, v))],
+    ['ARBITRIUM_HOST_BEACON_PUBLIC_IP', (k, v) => (result.beaconPublicIp = tryParseEnvVariableString(k, v))],
+    ['ARBITRIUM_HOST_BEACON_PORT_UDP_EXTERNAL', (k, v) => (result.beaconPortUdp = tryParseEnvVariableUInt(k, v))],
+    ['ARBITRIUM_HOST_BEACON_PORT_TCP_EXTERNAL', (k, v) => (result.beaconPortTcp = tryParseEnvVariableUInt(k, v))],
+    ['ARBITRIUM_DEPLOYMENT_LOCATION', (k, v) => (result.location = tryParseEnvVariableJSON<LocationDTO>(k, v))],
+    [
+      'ARBITRIUM_PORTS_MAPPING',
+      (k, v) =>
+        (result.portMapping =
+          tryParseEnvVariableJSON<{ ports?: Record<string, PortMappingDTO> }>(k, v)?.ports ?? null),
+    ],
+  ])
 
-  if (env['ARBITRIUM_PORTS_MAPPING'] === undefined) {
+  Object.entries(env).forEach(([key, value]) => parsers.get(key)?.(key, value))
+
+  const missing = [...parsers.keys()].filter((key) => env[key] === undefined)
+  if (missing.length > 0) {
     Logger.warn(
-      "Edgegap Env | Missing variable 'ARBITRIUM_PORTS_MAPPING', port mapping is unavailable. This is expected when running outside an Edgegap deployment.",
+      `Edgegap Env | Missing variables ${missing.join(', ')}. This is expected when running outside an Edgegap deployment.`,
     )
   }
 

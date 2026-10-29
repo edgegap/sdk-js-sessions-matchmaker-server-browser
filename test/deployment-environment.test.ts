@@ -86,6 +86,7 @@ describe('DeploymentEnvironment.fromEnv', () => {
       fqdn: '',
     })
     expect(env.portMapping?.['gameport']?.link).toBe(':31504')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Missing variables ARBITRIUM_REQUEST_ID,'))
   })
 
   it.each(['-1', '1.5', 'abc', '4294967296'])('warns and defaults to 0 for uint %s', (value) => {
@@ -117,27 +118,41 @@ describe('DeploymentEnvironment.fromEnv', () => {
   })
 
   it('warns and defaults to null for malformed location JSON', () => {
-    const env = DeploymentEnvironment.fromEnv({
-      ARBITRIUM_PORTS_MAPPING: PORTS,
-      ARBITRIUM_DEPLOYMENT_LOCATION: '{',
-    })
+    const env = DeploymentEnvironment.fromEnv({ ...MOCK_ENV, ARBITRIUM_DEPLOYMENT_LOCATION: '{' })
 
     expect(env.location).toBeNull()
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it('warns once and continues without a port mapping, for local runs', () => {
-    const env = DeploymentEnvironment.fromEnv({ ARBITRIUM_REQUEST_ID: 'abc123', PATH: '/usr/bin' })
+  it('warns once listing every missing variable, and continues for local runs', () => {
+    const env = DeploymentEnvironment.fromEnv({ PATH: '/usr/bin' })
 
-    expect(env.requestId).toBe('abc123')
+    expect(env.requestId).toBeNull()
     expect(env.portMapping).toBeNull()
     expect(warn).toHaveBeenCalledOnce()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Missing variable 'ARBITRIUM_PORTS_MAPPING'"))
+    expect(warn).toHaveBeenCalledWith(
+      '⚠️ Edgegap Edgegap Env | Missing variables ' +
+        Object.keys(MOCK_ENV)
+          .filter((key) => key.startsWith('ARBITRIUM_'))
+          .join(', ') +
+        '. This is expected when running outside an Edgegap deployment.',
+    )
+  })
+
+  it('lists only the variables that are missing', () => {
+    const { ARBITRIUM_DELETE_URL: _url, ARBITRIUM_PORTS_MAPPING: _ports, ...env } = MOCK_ENV
+
+    DeploymentEnvironment.fromEnv(env)
+
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Missing variables ARBITRIUM_DELETE_URL, ARBITRIUM_PORTS_MAPPING.'),
+    )
   })
 
   it('warns once and continues with a malformed port mapping', () => {
-    expect(DeploymentEnvironment.fromEnv({ ARBITRIUM_PORTS_MAPPING: '{' }).portMapping).toBeNull()
-    expect(DeploymentEnvironment.fromEnv({ ARBITRIUM_PORTS_MAPPING: '{}' }).portMapping).toBeNull()
+    expect(DeploymentEnvironment.fromEnv({ ...MOCK_ENV, ARBITRIUM_PORTS_MAPPING: '{' }).portMapping).toBeNull()
+    expect(DeploymentEnvironment.fromEnv({ ...MOCK_ENV, ARBITRIUM_PORTS_MAPPING: '{}' }).portMapping).toBeNull()
     expect(warn).toHaveBeenCalledOnce()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Couldn't parse variable 'ARBITRIUM_PORTS_MAPPING'"))
   })

@@ -94,7 +94,7 @@ These behaviors exist in Unity v3.5.6. Unchecked items are reproduced as-is in J
 
 ### Shared DTOs
 
-- [x] **A missing port mapping crashes environment parsing.** `DeploymentEnvironmentDTO` throws a null-reference error when `ARBITRIUM_PORTS_MAPPING` is absent (`DeploymentEnvironmentDTO.cs:104`), which breaks local runs without a mock environment. Fixed: a missing mapping logs one warning and leaves `portMapping` as `null`, so the same build runs locally and on Edgegap. A malformed mapping logs the usual parse warning.
+- [x] **A missing port mapping crashes environment parsing.** `DeploymentEnvironmentDTO` throws a null-reference error when `ARBITRIUM_PORTS_MAPPING` is absent (`DeploymentEnvironmentDTO.cs:104`), which breaks local runs without a mock environment. Unity also falls back silently on every other missing `ARBITRIUM_*` variable, even though Edgegap always injects all of them. Fixed: parsing never throws, so the same build runs locally and on Edgegap. One warning lists every missing `ARBITRIUM_*` variable, and a malformed value logs the usual parse warning.
 - [x] **A malformed ticket crashes match parsing.** `MatchEnvironmentDTO` throws a null-reference error when one `MM_TICKET_*` variable fails to parse (`MatchEnvironmentDTO.cs:62`). Fixed: the ticket is skipped after the usual parse warning.
 
 ### Server Browser: `ClientAgent`
@@ -196,6 +196,6 @@ Fixed upstream issues (details in [Upstream issues](#upstream-issues-found-durin
 - [ ] **`Observable<T>` starts with `Current = null`.** Behavior change for code that reads `Current` before the first update.
 - [ ] **`GroupClient`:** a session counter for polling and expiry. `restart skipped (match found)` after a `409` that drops a follow-up.
 - [ ] **Backfill `ServerAgent`:** count in-flight creations, stop polling with zero backfills, emit a new map on assignment, add `[id]` to the max-retries error.
-- [ ] **Environment parsing:** warn on a missing port mapping, and skip malformed tickets.
+- [ ] **Environment parsing:** don't crash on a missing port mapping, warn once listing every missing `ARBITRIUM_*` variable, and skip malformed tickets.
 
 When another item under "Upstream issues", "Jitter", or "API and abstraction improvements" ships in JS and applies to Unity, add it here.
