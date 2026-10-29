@@ -48,7 +48,7 @@ export class ServerAgent<A = unknown> {
   logBackfillUpdates: boolean
   logPollingUpdates: boolean
 
-  readonly monitor: Observable<MonitorResponseDTO> = new Observable({} as MonitorResponseDTO)
+  readonly monitor: Observable<MonitorResponseDTO> = new Observable()
   readonly backfills: Observable<Backfills<A>> = new Observable<Backfills<A>>({})
   readonly assignments: Record<string, InjectedTicketDTO<A>> = {}
 
@@ -56,6 +56,7 @@ export class ServerAgent<A = unknown> {
   private timers = new Timers()
   private _connectedAt = new Map<string, Date>()
   private polling = false
+  private creatingBackfills = 0
   private backfillRunning = false
   private backfillPending = false
 
@@ -189,7 +190,7 @@ export class ServerAgent<A = unknown> {
   }
 
   private backfillCount(): number {
-    return Object.keys(this.backfills.current!).length
+    return Object.keys(this.backfills.current!).length + this.creatingBackfills
   }
 
   private assign(ticket: InjectedTicketDTO<A>): void {
@@ -219,9 +220,11 @@ export class ServerAgent<A = unknown> {
       return
     }
 
+    this.creatingBackfills++
     this.api!.createBackfill<A>(
       { profile: this.profile, attributes: this.backfillAttributes, tickets: this.assignments },
       (backfill) => {
+        this.creatingBackfills--
         this.backfills._update(
           { ...this.backfills.current, [backfill.id]: backfill },
           `created [${backfill.id}]`,
@@ -232,11 +235,14 @@ export class ServerAgent<A = unknown> {
           this.timers.delay(jitter(this.pollingBackoffSeconds), () => this.startPollingBackfills())
         }
       },
-      (error) => this.backfills._error(`create failed\n${error}`),
+      (error) => {
+        this.creatingBackfills--
+        this.backfills._error(`create failed\n${error}`)
+      },
     )
   }
 
-  private startPollingBackfills(consecutiveErrors = 0): void {
+  private startPollingBackfills(consecutiveErrors = 0, failedIds: string[] = []): void {
     if (!this.polling) {
       this.backfills._notify('polling stopped')
       return
@@ -244,8 +250,17 @@ export class ServerAgent<A = unknown> {
 
     if (consecutiveErrors > this.maxConsecutivePollingErrors) {
       this.polling = false
-      this.backfills._error('polling failed (reached maximum retries)')
+      failedIds
+        .filter((id) => id in this.backfills.current!)
+        .forEach((id) => this.backfills._error(`polling failed (reached maximum retries) [${id}]`))
       this.abandonAllBackfills()
+      return
+    }
+
+    const current = Object.values(this.backfills.current!)
+    if (current.length === 0) {
+      this.polling = false
+      this.backfills._notify('polling stopped')
       return
     }
 
@@ -253,11 +268,10 @@ export class ServerAgent<A = unknown> {
       this.backfills._notify(`polling [${consecutiveErrors + 1}/${this.maxConsecutivePollingErrors}]`)
     }
 
-    const current = Object.values(this.backfills.current!)
-    let failed = false
+    const failed: string[] = []
     const finished = this.timers.countdown(current.length, () => {
-      const next = failed ? consecutiveErrors + 1 : 0
-      this.timers.delay(jitter(this.pollingBackoffSeconds), () => this.startPollingBackfills(next))
+      const next = failed.length > 0 ? consecutiveErrors + 1 : 0
+      this.timers.delay(jitter(this.pollingBackoffSeconds), () => this.startPollingBackfills(next, failed))
     })
 
     current.forEach((b) =>
@@ -267,13 +281,16 @@ export class ServerAgent<A = unknown> {
           if (backfill.status === 'ASSIGNED') {
             const ticket = backfill.assigned_ticket!
             this.assign(ticket)
-            this.backfills._update(this.backfills.current, `assigned [${backfill.id}]`)
+            this.backfills._update(
+              { ...this.backfills.current, [backfill.id]: backfill },
+              `assigned [${backfill.id}]`,
+            )
             this.removeBackfill(this.backfills.current!, backfill.id)
           }
           finished()
         },
         (error, response) => {
-          failed = true
+          failed.push(b.id)
           if (response.status === 404) {
             this.backfills._notify(`polling failed (not found) [${b.id}]`, ObservableActionType.Warn)
             this.removeBackfill(this.backfills.current!, b.id, () => this.startNewBackfill())

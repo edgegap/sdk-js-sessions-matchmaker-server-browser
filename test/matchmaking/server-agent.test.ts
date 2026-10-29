@@ -147,7 +147,7 @@ describe('ServerAgent', () => {
     expect(agent.backfills.current).toEqual({})
   })
 
-  it('upstream: the assigned update has the same previous and current value', async () => {
+  it('emits the assigned backfill as a new state', async () => {
     server.on('GET /backfills/b1', {
       status: 200,
       body: backfill('b1', { status: 'ASSIGNED', assigned_ticket: ticket('t2') }),
@@ -162,10 +162,13 @@ describe('ServerAgent', () => {
     await vi.advanceTimersByTimeAsync(1050)
 
     expect(snapshots).toHaveLength(1)
-    expect(snapshots[0]![0]).toBe(snapshots[0]![1])
+    const [previous, current] = snapshots[0] as [Record<string, { status: string }>, Record<string, { status: string }>]
+    expect(previous).not.toBe(current)
+    expect(previous['b1']?.status).toBe('SEARCHING')
+    expect(current['b1']?.status).toBe('ASSIGNED')
   })
 
-  it('upstream: keeps polling with zero backfills', async () => {
+  it('stops polling with zero backfills and resumes with a new one', async () => {
     server.on('GET /backfills/b1', {
       status: 200,
       body: backfill('b1', { status: 'ASSIGNED', assigned_ticket: ticket('t2') }),
@@ -176,7 +179,13 @@ describe('ServerAgent', () => {
     await vi.advanceTimersByTimeAsync(1050 * 5)
 
     expect(server.count('GET /backfills/b1')).toBe(1)
-    expect(events.filter(([, m]) => m === 'polling [1/10]').length).toBeGreaterThan(3)
+    expect(events.filter(([, m]) => m.startsWith('polling ['))).toHaveLength(1)
+    expect(events.at(-1)).toEqual([T.Log, 'polling stopped'])
+
+    agent.abandonPlayer('t2')
+    await vi.advanceTimersByTimeAsync(1050)
+
+    expect(server.count('GET /backfills/b2')).toBe(1)
   })
 
   describe('players', () => {
@@ -217,14 +226,27 @@ describe('ServerAgent', () => {
       expect(console.warn).toHaveBeenCalledWith('⚠️ Edgegap MM | Backfill - ticket abandon failed [nope]')
     })
 
-    it('upstream: quick abandons over-provision backfills', async () => {
+    it('counts in-flight creations, so quick abandons fill exactly the open seats', async () => {
       const { agent } = start({ t1: ticket('t1'), t2: ticket('t2') }, { targetTeamSize: 2 })
 
       agent.abandonPlayer('t1')
       agent.abandonPlayer('t2')
       await vi.advanceTimersByTimeAsync(0)
 
-      expect(server.count('POST /backfills')).toBe(3)
+      expect(server.count('POST /backfills')).toBe(2)
+    })
+
+    it('frees the in-flight slot when a creation fails', async () => {
+      server.on('POST /backfills', [{ status: 400, body: {} }, { status: 201, body: backfill('b1') }])
+      const { agent } = start({}, { targetTeamSize: 1 })
+
+      agent.addBackfills()
+      await vi.advanceTimersByTimeAsync(0)
+      agent.addBackfills()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(server.count('POST /backfills')).toBe(2)
+      expect(Object.keys(agent.backfills.current!)).toEqual(['b1'])
     })
   })
 
@@ -272,17 +294,19 @@ describe('ServerAgent', () => {
       expect(events.at(-1)).toEqual([T.Error, 'maximum capacity currently reached'])
     })
 
-    it('upstream: gives up after the maximum without the backfill ID, and abandons all', async () => {
+    it('gives up after the maximum with the failing backfill IDs, and abandons all', async () => {
       server.on('GET /backfills/b1', { status: 503, body: { message: 'down' } })
-      const { agent, events } = start({}, { targetTeamSize: 1, maxConsecutivePollingErrors: 0 })
+      const { agent, events } = start({}, { targetTeamSize: 2, maxConsecutivePollingErrors: 0 })
       agent.addBackfills()
 
       await vi.advanceTimersByTimeAsync(1050 + 1050 * 3 + 1050)
 
-      expect(events.slice(1)).toEqual([
-        [T.Error, 'polling failed (reached maximum retries)'],
+      expect(events.slice(2)).toEqual([
+        [T.Error, 'polling failed (reached maximum retries) [b1]'],
         [T.Log, 'abandoned [b1]'],
         [T.Update, 'removed [b1]'],
+        [T.Log, 'abandoned [b2]'],
+        [T.Update, 'removed [b2]'],
       ])
     })
   })
