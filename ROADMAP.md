@@ -7,19 +7,20 @@ References like `GroupClient.cs:350` point to the Unity SDK source at v3.5.6. "O
 ## Phase 1 decisions
 
 - **Package:** `@edgegap/sdk`, with `matchmaking` and `server-browser` subpath exports.
-- **Types mirror the wire JSON.** TypeScript interfaces use the real API keys (`group_id`, `is_ready`, `available_seats`, ...), so responses are used as parsed and requests are sent as built, with no mapping layer. This keeps user-defined `attributes` and `metadata` (whose keys must match the Matchmaker profile and the Server Browser index fields) in the same shape as the SDK-defined fields. The Unity implementation defines which fields exist. Where the OpenAPI spec leaves out a field Unity sends (`attributes.assignment.request_id` and `tickets.*.team_id` in `POST /backfills`), the spec is wrong and the field stays. The spec is only used to sharpen value types:
+- **Types mirror the wire JSON.** TypeScript interfaces use the real API keys (`group_id`, `is_ready`, `available_seats`, ...), so responses are used as parsed and requests are sent as built, with no mapping layer. This keeps user-defined `attributes` and `metadata` (whose keys must match the Matchmaker profile and the Server Browser index fields) in the same shape as the SDK-defined fields. The Unity implementation defines which fields exist. Where the OpenAPI spec leaves out a field Unity sends (`attributes.assignment.request_id` in `POST /backfills`, which the Matchmaker 3.3.3 service accepts), the spec is wrong and the field stays. `tickets.*.team_id` is declared on `InjectedTicketDTO` but never sent: `ServerAgent.cs:276,402` copies tickets into assignments without `TeamID`, and `NullValueHandling.Ignore` drops it. The JS agent copies the same five fields. The spec is only used to sharpen value types:
   - Port `internal`/`external` are `number` (`string` in `PortMappingDTO`).
   - Beacon list `count` is `number` (`string` in `BeaconsResponseDTO`).
   - `status` fields are string-literal unions from the spec's enums, for example `'SEARCHING' | 'TEAM_FOUND' | 'MATCH_FOUND' | 'HOST_ASSIGNED' | 'CANCELLED'`.
+- **SDK-built objects use camelCase.** Objects with no wire format, like `DeploymentEnvironment.fromEnv(env)` (Unity `DeploymentEnvironmentDTO`), use camelCase fields (`requestId`, `selfStopUrl`, ...). Nested API shapes such as `location` and `portMapping` stay snake_case.
 - **Auth tokens are always required.** Every agent throws `AuthToken not declared` without one, as in Unity. Client tokens (Matchmaker, Server Browser) ship in the client build. Keeping the Server Browser client token on a game backend is an optional extension and is out of scope.
 - **`GroupClient` is renamed `GroupAgent`.** This mirrors `ServerAgent` and `ClientAgent`. The old name was legacy.
-- **The legacy ticket `Client` is not ported.** It is `[Obsolete]` in Unity in favor of the group-up flow, and so are its `Assignment` observable and group-ticket helpers. `TicketsRequestDTO` survives only as the base shape of group-up requests.
+- **The legacy ticket `Client` is not ported.** It is `[Obsolete]` in Unity in favor of the group-up flow, and so are its `Assignment` observable and group-ticket helpers. `TicketsRequestDTO` survives only as the base shape of group-up requests. The matching `Api` methods (`/tickets`, `/group-tickets`) are not ported either.
 - **`player_ip` is never sent by `GroupAgent`.** The Matchmaker takes the player's IP from the group create request. The field stays in the request type (it's nullable in the spec) for server-to-server use, but it's omitted when unset, where Newtonsoft would serialize it as `null`.
-- **Upstream bugs are reproduced as-is.** Each is pinned by a parity test and listed below for phase 2.
+- **Upstream bugs are reproduced as-is.** Each is pinned by a parity test and listed below for phase 2. Exceptions fixed in phase 1 are checked off in their list.
 
 ## Service constraints that shape the design
 
-- **Matchmaker:** the client token is safe to ship in game clients. Browser access works once the game's origins are whitelisted with `allowed_cors_origins` (exact domains or wildcards) in the Matchmaker configuration. Preflight requests need no credentials. The Matchmaker never sends `Retry-After`.
+- **Matchmaker:** the client token is safe to ship in game clients. Browser access works once the game's origins are whitelisted with `allowed_cors_origins` (exact domains or wildcards) in the Matchmaker configuration. Entries are matched against the full origin: on Matchmaker 3.3.3, `https://*.my-game-server.com` matches, but a bare `localhost` matches neither `http://localhost` nor `http://localhost:5173`. List local dev servers with their full origin, for example `http://localhost:5173`. Preflight requests need no credentials. The Matchmaker never sends `Retry-After`.
 - **Server Browser:** CORS support equivalent to the Matchmaker's is being added to the service. It will expose `Retry-After` through `Access-Control-Expose-Headers`, so browser clients can honor it for auto-assigned reservations. `ClientAgent` calls the Server Browser directly from the browser with the client token.
 - **Server tokens** (Matchmaker backfill, Server Browser server API, deployment self-stop) belong only in game servers running on Node, Bun, or Deno. They must never ship in a browser bundle.
 
@@ -29,10 +30,9 @@ These deviate from the Unity behavior because the JS platform leaves no reasonab
 
 - **No `MonoBehaviour` handler.** Coroutines become `setTimeout`/`fetch`. Unity stops coroutines when the handler is destroyed. JS has no equivalent, so every agent gets a `dispose()` that clears timers, aborts in-flight requests, and removes subscribers.
 - **Query strings are URL-encoded.** `ServerBrowser/Api.cs:164` concatenates `$filter`/`$order` raw. Values are encoded with `encodeURIComponent`, and the `$` in parameter names stays literal.
-- **Connection state is never serialized.** C# hides `BackfillAssignedTicket.ConnectedAt` with `[JsonIgnore]`. The JS agent keeps connection times in a separate map, so tickets sent in `POST /backfills` contain only API fields.
+- **Connection state is never serialized.** C# hides `BackfillAssignedTicket.ConnectedAt` with `[JsonIgnore]`. The JS agent keeps connection times in a separate map (`connectedAt`), so tickets sent in `POST /backfills` contain only API fields. The other local-only field, `BackfillResponseDTO.CreatedAt`, is set but never read in Unity, so it's dropped.
 - **Response parse failures are reported, not thrown.** In C# (`Api.cs`, every `catch { throw; }`) a parse error escapes into the coroutine runner, and the operation silently stops, which can freeze polling forever. In JS it goes to the error path, so the observable emits the same error message it would for a failed request.
-- **Metadata merge skips `undefined`.** `MetadataDTO.Merge` uses reflection with `??`. C# value types (`int`, `bool`) are never null, so an unset `int` field in an update overwrites the existing value with `0`. In JS an unset field is `undefined` and is skipped.
-- **No ICMP ping in browsers or without privileges.** See [Ping](#ping-beacons-over-http).
+- **Metadata merge skips `undefined`.** `MetadataDTO.Merge` uses reflection with `??`. C# value types (`int`, `bool`) are never null, so an unset `int` field in an update overwrites the existing value with `0`. In JS an unset field is `undefined` and is skipped.- **No ICMP ping in browsers or without privileges.** See [Ping](#ping-beacons-over-http).
 
 ## Phase 1 additions
 
@@ -75,6 +75,7 @@ These behaviors exist in Unity v3.5.6 and are reproduced as-is in phase 1. Each 
 - [ ] **Retries ignore network failures.** `SafeHttpRequest.cs:151` gives up when the response has no headers, for example on DNS errors, connection resets, or timeouts. Those are the failures most worth retrying.
 - [ ] **Any status carrying `Retry-After` is retried.** This is intentional for auto-assigned reservations, where the status code reports the policy's scaling state and `Retry-After` the wait while capacity is added. The Matchmaker never sends the header, so only the Server Browser is affected. Low priority: limit it to `429`, `5xx`, and the reservation endpoints, unless other Server Browser endpoints are meant to use it too.
 - [ ] **`Retry-After` is parsed only as seconds.** The HTTP-date form is not handled.
+- [x] **A custom `BackoffSeconds` is never used for retries.** `SafeHttpRequest.cs:183,193` overwrites `retryParameters.BackoffSeconds` with the default (or the `Retry-After` value) before scheduling each retry, so `new RetryParameters(attempts, backoffSeconds)` only affects the attempt count. Fixed in phase 1: the custom backoff is kept, and `Retry-After` only sets the wait for the retry it came with.
 - [ ] **A sample builds `RetryParameters` wrong.** `new RetryParameters { MaxAttempts = 10 }` (`ServerBrowserServerHandler.cs:246`) leaves `RemainingAttempts = 3`. Use the constructor.
 - [ ] **`Observable<T>` initializes `Current` to `new T()`, not null.** Guards like `Group.Current is not null && !abandon` (`GroupClient.cs:126,141,168`) therefore fire on the very first call, so `CreateGroup(group)` without `abandon: true` always emits `conflict, abandon and restart`. Every sample passes `abandon: true`, which hides this.
 
@@ -188,5 +189,6 @@ Already different in JS phase 1, because the platform forced it:
 - [ ] **Type port `internal`/`external` and beacon `count` as numbers,** to match the API. Today it works only through Newtonsoft's coercion.
 - [ ] **Rename `GroupClient` to `GroupAgent`.** Breaking change, so it goes in the next major version, with an `[Obsolete]` alias in the meantime.
 - [ ] **Remove the legacy ticket `Client`.** It's already `[Obsolete]`. Next major version.
+- [ ] **Keep a custom `BackoffSeconds` across retries.** `SafeHttpRequest.cs:183,193`. Pass the `Retry-After` wait to the next attempt instead of overwriting the delegate.
 
 Phase 2 fixes: when an item under "Upstream issues", "Jitter", or "API and abstraction improvements" ships in JS and applies to Unity, add it here.

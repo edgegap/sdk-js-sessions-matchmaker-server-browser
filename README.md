@@ -2,7 +2,7 @@
 
 JavaScript/TypeScript SDK for Edgegap [Matchmaking](https://docs.edgegap.com/learn/matchmaking/matchmaker-in-depth) and [Server Browser](https://docs.edgegap.com/learn/server-browser), ported from the [Unity SDK v3.5.6](https://github.com/edgegap/sdk-unity-sessions-matchmaker-server-browser). It targets browser games (WebSocket over WSS) and their Node, Bun, or Deno game servers.
 
-> **Status:** planning complete, implementation not started. Decisions, known Unity issues, phase 2 candidates, and Unity backports are tracked in [ROADMAP.md](ROADMAP.md).
+> **Status:** repo setup, the shared layer, and Matchmaking are done (implementation steps 1 to 3). The Server Browser is implemented on the `server-browser` branch and waits on service-side CORS support. Decisions, known Unity issues, phase 2 candidates, and Unity backports are tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Porting plan
 
@@ -59,7 +59,7 @@ New in JS: `getConnectionUrl(assignment, portName)` builds `wss://{link}` or `ws
 
 - Vitest, with fake timers and a stubbed global `fetch`.
 - Scenario tests for each agent, derived from the C# code paths. They assert the exact emitted messages and action types, including the reproduced Unity bugs.
-- Opt-in integration tests against a real Matchmaker or Server Browser when tokens are provided as environment variables.
+- Opt-in integration tests against a real Matchmaker or Server Browser when tokens are provided as environment variables. For Matchmaking, set `EDGEGAP_MM_URL` and `EDGEGAP_MM_TOKEN` for a matchmaker running the advanced example profile, then run `npm run test:integration`. These tests never ready a full group, so they don't start a deployment. Set `EDGEGAP_MM_ALLOW_DEPLOY=1` to also run the backfill assignment test. That test normally fills the open backfill instead of deploying, but a deployment can still start if the match isn't made through the backfill.
 
 ### Samples
 
