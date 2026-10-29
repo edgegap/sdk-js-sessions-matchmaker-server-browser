@@ -31,4 +31,4 @@ export {
   tryParseEnvVariableBool,
   tryParseEnvVariableJSON,
 } from './deployment-environment.ts'
-export { getConnectionUrl } from './connection.ts'
+export { type ConnectionOptions, getConnectionUrl } from './connection.ts'

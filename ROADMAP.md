@@ -39,12 +39,12 @@ These deviate from the Unity behavior because the JS platform leaves no reasonab
 
 This has no Unity equivalent, but browser games can't work without it.
 
-- **`getConnectionUrl(assignment, portName)`.** It returns a WebSocket URL from an assignment (Matchmaker) or a `server` object (Server Browser). Port mappings have a static shape: `internal`, `external`, `link`, `protocol`. `link` is already `{fqdn}:{external}`, so the helper builds `{scheme}://{link}`, which never uses `public_ip` (TLS certificates don't cover raw IPs). Ports with TLS upgrade enabled report `WSS` or `HTTPS`. The scheme is chosen like this:
+- **`getConnectionUrl(assignment, portName, { tls = true })`.** It returns a WebSocket URL from an assignment (Matchmaker) or a `server` object (Server Browser). Port mappings have a static shape: `internal`, `external`, `link`, `protocol`. `link` is already `{fqdn}:{external}`, so the helper builds `{scheme}://{link}`, which never uses `public_ip` (TLS certificates don't cover raw IPs). A WS port reports `protocol: "Websocket"` whether TLS upgrade is on or not (seen on a live Matchmaker assignment, 2026-10-29), so the caller says which with `tls`. The scheme is chosen like this:
 
   | `protocol` | Result |
   | --- | --- |
   | `WSS`, `HTTPS` | `wss://` |
-  | `WS`, `HTTP` | `ws://`, with a warning on `https:` pages, where browsers block mixed content |
+  | `Websocket`, `WS`, `HTTP` | `wss://`, or `ws://` with `tls: false`, warning on `https:` pages, where browsers block mixed content |
   | anything else (`TCP`, `UDP`, `TCP/UDP`) | error naming the port and suggesting `WS` with TLS upgrade. Browsers can't open raw sockets, and game servers can't present a certificate for the deployment FQDN themselves. |
 
 ## Ping beacons over HTTP

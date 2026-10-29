@@ -23,7 +23,7 @@ Phase 1 is a faithful port: the same agents, the same observable callback signat
 | `Observable`, `SafeHttpRequest`, `Ping`, `Logger` | shared layer | anywhere |
 | `Matchmaking.Client` (`[Obsolete]`) | not ported | |
 
-New in JS: `getConnectionUrl(assignment, portName)` builds `wss://{link}` or `ws://{link}` from the port `protocol` (`WSS`/`HTTPS` or `WS`/`HTTP`), and throws for `TCP`/`UDP`, which browsers can't open.
+New in JS: `getConnectionUrl(assignment, portName, { tls = true })` builds `wss://{link}` for WebSocket and HTTP ports (`Websocket`, `WS`, `HTTP`, `WSS`, `HTTPS`), or `ws://{link}` with `tls: false`, and throws for `TCP`/`UDP`, which browsers can't open. Assignments don't say whether TLS upgrade is on, so the default assumes it, as browser games on `https` pages need it.
 
 ### Unity to JS mapping
 

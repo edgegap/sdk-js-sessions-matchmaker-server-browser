@@ -27,16 +27,24 @@ describe('getConnectionUrl', () => {
     expect(getConnectionUrl(deployment(protocol), 'gameport')).toBe('wss://abc123.pr.edgegap.net:31504')
   })
 
-  it.each(['WS', 'HTTP'])('returns ws:// for %s without warning outside https pages', (protocol) => {
-    expect(getConnectionUrl(deployment(protocol), 'gameport')).toBe('ws://abc123.pr.edgegap.net:31504')
+  it.each(['Websocket', 'WS', 'HTTP'])('returns wss:// for %s with TLS upgrade (default)', (protocol) => {
+    expect(getConnectionUrl(deployment(protocol), 'gameport')).toBe('wss://abc123.pr.edgegap.net:31504')
+  })
+
+  it.each(['Websocket', 'WS', 'HTTP'])('returns ws:// for %s without TLS, without warning outside https pages', (protocol) => {
+    expect(getConnectionUrl(deployment(protocol), 'gameport', { tls: false })).toBe('ws://abc123.pr.edgegap.net:31504')
     expect(warn).not.toHaveBeenCalled()
   })
 
   it('warns about mixed content on https pages', () => {
     vi.stubGlobal('location', { protocol: 'https:' })
 
-    expect(getConnectionUrl(deployment('WS'), 'gameport')).toBe('ws://abc123.pr.edgegap.net:31504')
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Port 'gameport' uses 'WS' without TLS"))
+    expect(getConnectionUrl(deployment('Websocket'), 'gameport', { tls: false })).toBe('ws://abc123.pr.edgegap.net:31504')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Port 'gameport' uses 'Websocket' without TLS"))
+  })
+
+  it('keeps wss:// for TLS protocols even with tls: false', () => {
+    expect(getConnectionUrl(deployment('WSS'), 'gameport', { tls: false })).toBe('wss://abc123.pr.edgegap.net:31504')
   })
 
   it.each(['TCP', 'UDP', 'TCP/UDP'])('throws for %s and suggests WS with TLS upgrade', (protocol) => {
