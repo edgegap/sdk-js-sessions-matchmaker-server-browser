@@ -8,7 +8,7 @@ JavaScript/TypeScript SDK for Edgegap [Matchmaking](https://docs.edgegap.com/lea
 
 ### Approach
 
-Phase 1 is a faithful port: the same agents, the same observable callback signature, and the exact event message strings, so the existing docs event tables still apply. The port deviates only where the JS platform forces it (see "Forced by platform" in [ROADMAP.md](ROADMAP.md)). Unity bugs are reproduced as-is and pinned by tests. Fixes come in phase 2, after internal review and testing.
+Phase 1 is a faithful port: the same agents, the same observable callback signature, and the exact event message strings, so the existing docs event tables still apply. The port deviates only where the JS platform forces it (see "Forced by platform" in [ROADMAP.md](ROADMAP.md)). Unity bugs are reproduced as-is and pinned by tests, except the ones already fixed, which are checked off in [ROADMAP.md](ROADMAP.md).
 
 ### Scope
 
@@ -47,7 +47,7 @@ New in JS: `getConnectionUrl(assignment, portName)` builds `wss://{link}` or `ws
 - **CORS:** the Matchmaker whitelists origins with `allowed_cors_origins`. The Server Browser is getting the same support, and will expose `Retry-After`.
 - **`player_ip` is never sent by `GroupAgent`,** because the Matchmaker takes it from the request.
 - **Ping is a stub:** an injectable `Ping` interface whose default returns `0` per city, matching Unity WebGL. HTTP ping waits on beacon support.
-- **Polling and retry timing match Unity:** 1s polling, fixed backoff, and up to 0.1s of jitter.
+- **Polling and retry timing match Unity:** 1s polling, fixed backoff, and up to 0.1s of jitter. Unlike Unity, retries cover network failures and timeouts, and are limited to those, `429`, and `5xx`.
 
 ### Packaging and compatibility
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Phase 1 is a faithful port of the [Unity SDK v3.5.6](https://github.com/edgegap/sdk-unity-sessions-matchmaker-server-browser) to JavaScript/TypeScript. Nothing in this file is implemented in phase 1 unless it is listed under "Phase 1 decisions", "Forced by platform", or "Phase 1 additions". Everything else is a candidate for phase 2, to be decided after internal review and testing of the parity release.
+Phase 1 is a faithful port of the [Unity SDK v3.5.6](https://github.com/edgegap/sdk-unity-sessions-matchmaker-server-browser) to JavaScript/TypeScript. Nothing in this file is implemented in phase 1 unless it is listed under "Phase 1 decisions", "Forced by platform", or "Phase 1 additions", or checked off under "Upstream issues". Everything else is a candidate for phase 2, to be decided after internal review and testing of the parity release.
 
 References like `GroupClient.cs:350` point to the Unity SDK source at v3.5.6. "OpenAPI spec" means the Matchmaker 3.2.0 spec generated for the simple example configuration.
 
@@ -16,7 +16,7 @@ References like `GroupClient.cs:350` point to the Unity SDK source at v3.5.6. "O
 - **`GroupClient` is renamed `GroupAgent`.** This mirrors `ServerAgent` and `ClientAgent`. The old name was legacy.
 - **The legacy ticket `Client` is not ported.** It is `[Obsolete]` in Unity in favor of the group-up flow, and so are its `Assignment` observable and group-ticket helpers. `TicketsRequestDTO` survives only as the base shape of group-up requests. The matching `Api` methods (`/tickets`, `/group-tickets`) are not ported either.
 - **`player_ip` is never sent by `GroupAgent`.** The Matchmaker takes the player's IP from the group create request. The field stays in the request type (it's nullable in the spec) for server-to-server use, but it's omitted when unset, where Newtonsoft would serialize it as `null`.
-- **Upstream bugs are reproduced as-is.** Each is pinned by a parity test and listed below for phase 2. Exceptions fixed in phase 1 are checked off in their list.
+- **Upstream bugs are reproduced as-is unless fixed.** Unfixed bugs are pinned by a parity test and listed below. Fixed bugs are checked off in their list, covered by a test of the fixed behavior, and added to [Backport to Unity SDK](#backport-to-unity-sdk).
 
 ## Service constraints that shape the design
 
@@ -67,35 +67,35 @@ Phase 2, once beacons support HTTP:
 
 ## Upstream issues found during the port review
 
-These behaviors exist in Unity v3.5.6 and are reproduced as-is in phase 1. Each has a parity test that pins the current behavior, so a fix shows up as a deliberate test change.
+These behaviors exist in Unity v3.5.6. Unchecked items are reproduced as-is in JS, and each has a parity test that pins the current behavior, so a fix shows up as a deliberate test change. Checked items are fixed in JS and listed in [Backport to Unity SDK](#backport-to-unity-sdk).
 
 ### Shared
 
-- [ ] **Request timeouts are not wired through.** `Matchmaking/Api.cs:25` builds `SafeHttpRequest` without a timeout, so `RequestTimeoutSeconds` on `GroupClient`, `ServerAgent`, and `ServerBrowser.ClientAgent` has no effect, and every request uses 3s. `ServerBrowser.ServerAgent` clamps the timeout to the heartbeat interval only after the `Api` is constructed (`ServerAgent.cs:132`), so the clamp does nothing either.
-- [ ] **Retries ignore network failures.** `SafeHttpRequest.cs:151` gives up when the response has no headers, for example on DNS errors, connection resets, or timeouts. Those are the failures most worth retrying.
-- [ ] **Any status carrying `Retry-After` is retried.** This is intentional for auto-assigned reservations, where the status code reports the policy's scaling state and `Retry-After` the wait while capacity is added. The Matchmaker never sends the header, so only the Server Browser is affected. Low priority: limit it to `429`, `5xx`, and the reservation endpoints, unless other Server Browser endpoints are meant to use it too.
-- [ ] **`Retry-After` is parsed only as seconds.** The HTTP-date form is not handled.
-- [x] **A custom `BackoffSeconds` is never used for retries.** `SafeHttpRequest.cs:183,193` overwrites `retryParameters.BackoffSeconds` with the default (or the `Retry-After` value) before scheduling each retry, so `new RetryParameters(attempts, backoffSeconds)` only affects the attempt count. Fixed in phase 1: the custom backoff is kept, and `Retry-After` only sets the wait for the retry it came with.
-- [ ] **A sample builds `RetryParameters` wrong.** `new RetryParameters { MaxAttempts = 10 }` (`ServerBrowserServerHandler.cs:246`) leaves `RemainingAttempts = 3`. Use the constructor.
-- [ ] **`Observable<T>` initializes `Current` to `new T()`, not null.** Guards like `Group.Current is not null && !abandon` (`GroupClient.cs:126,141,168`) therefore fire on the very first call, so `CreateGroup(group)` without `abandon: true` always emits `conflict, abandon and restart`. Every sample passes `abandon: true`, which hides this.
+- [x] **Request timeouts are not wired through.** `Matchmaking/Api.cs:25` builds `SafeHttpRequest` without a timeout, so `RequestTimeoutSeconds` on `GroupClient`, `ServerAgent`, and `ServerBrowser.ClientAgent` has no effect, and every request uses 3s. `ServerBrowser.ServerAgent` clamps the timeout to the heartbeat interval only after the `Api` is constructed (`ServerAgent.cs:132`), so the clamp does nothing either. Fixed for Matchmaking: both agents pass `requestTimeoutSeconds` to the `Api`. The Server Browser still needs the same fix.
+- [x] **Retries ignore network failures.** `SafeHttpRequest.cs:151` gives up when the response has no headers, for example on DNS errors, connection resets, or timeouts. Those are the failures most worth retrying. Fixed: network failures and timeouts are retried like `5xx`. A timed-out `POST` may have reached the service, so a retry can create a duplicate group or backfill. The orphan expires through the Matchmaker's inactivity removal.
+- [x] **Any status carrying `Retry-After` is retried.** Fixed: only network failures, `429`, and `5xx` are retried, and `Retry-After` only sets the wait. Auto-assigned reservations used `Retry-After` on other statuses to report a policy that is scaling up. If the Server Browser keeps doing that, reservations need a per-request opt-in.
+- [x] **`Retry-After` is parsed only as seconds.** Fixed: the HTTP-date form waits until that date, or retries right away if the date is in the past.
+- [x] **A custom `BackoffSeconds` is never used for retries.** `SafeHttpRequest.cs:183,193` overwrites `retryParameters.BackoffSeconds` with the default (or the `Retry-After` value) before scheduling each retry, so `new RetryParameters(attempts, backoffSeconds)` only affects the attempt count. Fixed: the custom backoff is kept, and `Retry-After` only sets the wait for the retry it came with.
+- [x] **The first request is delayed when `RemainingAttempts < MaxAttempts`.** `SafeHttpRequest` treats any request with fewer remaining than maximum attempts as a retry. The sample's `new RetryParameters { MaxAttempts = 10 }` (`ServerBrowserServerHandler.cs:246`) leaves `RemainingAttempts = 3`, so its first request waits one backoff. Fixed: only actual retries wait.
+- [x] **`Observable<T>` initializes `Current` to `new T()`, not null.** Guards like `Group.Current is not null && !abandon` (`GroupClient.cs:126,141,168`) therefore fire on the very first call, so `CreateGroup(group)` without `abandon: true` always emits `conflict, abandon and restart`. Every sample passes `abandon: true`, which hides this. Fixed: observables start as `null`, except backfills, which start as an empty map.
 
 ### Matchmaking: `GroupAgent` (Unity `GroupClient`)
 
-- [ ] **Polling loops can overlap.** `StopMatchmaking` sets `Polling = false`, but a pending `DelayPollingGroup` coroutine is not cancelled. If a new group is created within the backoff window (about 1s), `Polling` is `true` again when the old coroutine wakes, and two loops poll at once. A generation counter or one `AbortController` per session would fix this.
-- [ ] **A stale expiry can wipe out a new group.** `ExpireGroup` (`GroupClient.cs:399`) unconditionally sets `Group` to `null` after `RemoveGroupSeconds`. A group created in that window gets wiped with `removed`.
-- [ ] **`StopMatchmaking` can drop the follow-up action after a `409`.** On `409` it resumes polling but never calls `onCompletedDelegate`, so `CreateGroup(..., abandon: true)` silently does nothing when the old group was just matched. That may be intended, since matched groups can't be deleted. If so, emit a distinct message.
+- [x] **Polling loops can overlap.** `StopMatchmaking` sets `Polling = false`, but a pending `DelayPollingGroup` coroutine is not cancelled. If a new group is created within the backoff window (about 1s), `Polling` is `true` again when the old coroutine wakes, and two loops poll at once. Fixed with a session counter: `stopMatchmaking` starts a new session, and pending timers and in-flight responses from an older session are ignored.
+- [x] **A stale expiry can wipe out a new group.** `ExpireGroup` (`GroupClient.cs:399`) unconditionally sets `Group` to `null` after `RemoveGroupSeconds`. A group created in that window gets wiped with `removed`. Fixed: the expiry belongs to its session.
+- [x] **`StopMatchmaking` can drop the follow-up action after a `409`.** On `409` it resumes polling but never calls `onCompletedDelegate`, so `CreateGroup(..., abandon: true)` silently does nothing when the old group was just matched. Fixed by keeping the behavior, since a matched group can't be deleted, and emitting `restart skipped (match found)` as a `Warn` after `abandon failed (match found)` when a follow-up was requested.
 
 ### Matchmaking: `ServerAgent` (backfill)
 
-- [ ] **Backfills can be over-provisioned.** `AddBackfills` uses a re-entrancy guard (`BackfillRunning`/`BackfillPending`), but `StartNewBackfill` is fire-and-forget, so the guard never actually overlaps. Capacity is computed from `Backfills.Current`, which updates only when the `POST` response arrives. Two quick `AbandonPlayer` calls can each schedule the full deficit. Track in-flight creations in the capacity check.
-- [ ] **An assignment emits an update with no state change.** `Backfills._Update(Backfills.Current, "assigned [...]")` (`ServerAgent.cs:411`) passes the same reference as both previous and current, so subscribers diffing `previous` against `current` see no change.
-- [ ] **Polling keeps running with zero backfills.** Once every backfill is assigned, the loop ticks forever and does nothing until `AbandonAllBackfills` is called.
-- [ ] **The max-retries error omits the backfill ID.** `polling failed (reached maximum retries)` has no `[id]` suffix, unlike the documented message.
+- [x] **Backfills can be over-provisioned.** `AddBackfills` uses a re-entrancy guard (`BackfillRunning`/`BackfillPending`), but `StartNewBackfill` is fire-and-forget, so the guard never actually overlaps. Capacity is computed from `Backfills.Current`, which updates only when the `POST` response arrives. Two quick `AbandonPlayer` calls can each schedule the full deficit. Fixed: in-flight creations count toward capacity.
+- [x] **An assignment emits an update with no state change.** `Backfills._Update(Backfills.Current, "assigned [...]")` (`ServerAgent.cs:411`) passes the same reference as both previous and current, so subscribers diffing `previous` against `current` see no change. Fixed: `assigned [{id}]` emits a new map holding the `ASSIGNED` backfill, followed by `removed [{id}]`.
+- [x] **Polling keeps running with zero backfills.** Once every backfill is assigned, the loop ticks forever and does nothing until `AbandonAllBackfills` is called. Fixed: polling stops with `polling stopped` and restarts when a backfill is created.
+- [x] **The max-retries error omits the backfill ID.** `polling failed (reached maximum retries)` has no `[id]` suffix, unlike the documented message. Fixed: one error per backfill that failed in the last round, then every backfill is abandoned as before.
 
 ### Shared DTOs
 
-- [ ] **A missing port mapping crashes environment parsing.** `DeploymentEnvironmentDTO` throws a null-reference error when `ARBITRIUM_PORTS_MAPPING` is absent (`DeploymentEnvironmentDTO.cs:104`), which breaks local runs without a mock environment.
-- [ ] **A malformed ticket crashes match parsing.** `MatchEnvironmentDTO` throws a null-reference error when one `MM_TICKET_*` variable fails to parse (`MatchEnvironmentDTO.cs:62`).
+- [x] **A missing port mapping crashes environment parsing.** `DeploymentEnvironmentDTO` throws a null-reference error when `ARBITRIUM_PORTS_MAPPING` is absent (`DeploymentEnvironmentDTO.cs:104`), which breaks local runs without a mock environment. Fixed: a missing mapping logs one warning and leaves `portMapping` as `null`, so the same build runs locally and on Edgegap. A malformed mapping logs the usual parse warning.
+- [x] **A malformed ticket crashes match parsing.** `MatchEnvironmentDTO` throws a null-reference error when one `MM_TICKET_*` variable fails to parse (`MatchEnvironmentDTO.cs:62`). Fixed: the ticket is skipped after the usual parse warning.
 
 ### Server Browser: `ClientAgent`
 
@@ -133,8 +133,7 @@ The Unity code and the docs ([matchmaking](https://docs.edgegap.com/unity/matchm
 | `abandon failed (already matched)` (group) | `abandon failed (match found)` |
 | `member update failed` as `Error` | `Warn` on `409`, `group update failed` as `Error` otherwise |
 | `remove failed [{backfill}]` | `remove failed (not found) [{backfill}]` |
-| `polling failed (reached maximum retries) [{backfill}]` | no `[{backfill}]` suffix |
-| (undocumented, matchmaking) | `maximum capacity currently reached`, `abandon failed (not found) [{id}]` |
+| (undocumented, matchmaking) | `maximum capacity currently reached`, `abandon failed (not found) [{id}]`, and in JS only, `restart skipped (match found)` |
 | (undocumented, server browser client) | `instance list retrieval failed`, `cache deleted` |
 | Poll memberships every 3–5s (docs update pending) | 1s polling backoff |
 | Increasing waits between `429` retries, e.g. 1s, 5s, 10s (docs update pending) | Fixed backoff |
@@ -191,4 +190,12 @@ Already different in JS phase 1, because the platform forced it:
 - [ ] **Remove the legacy ticket `Client`.** It's already `[Obsolete]`. Next major version.
 - [ ] **Keep a custom `BackoffSeconds` across retries.** `SafeHttpRequest.cs:183,193`. Pass the `Retry-After` wait to the next attempt instead of overwriting the delegate.
 
-Phase 2 fixes: when an item under "Upstream issues", "Jitter", or "API and abstraction improvements" ships in JS and applies to Unity, add it here.
+Fixed upstream issues (details in [Upstream issues](#upstream-issues-found-during-the-port-review)):
+
+- [ ] **HTTP:** wire `RequestTimeoutSeconds` into the Matchmaking `Api`. Retry network failures and timeouts, and retry only those, `429`, and `5xx`. Parse HTTP-date `Retry-After`. Send the first request right away regardless of `RemainingAttempts`.
+- [ ] **`Observable<T>` starts with `Current = null`.** Behavior change for code that reads `Current` before the first update.
+- [ ] **`GroupClient`:** a session counter for polling and expiry. `restart skipped (match found)` after a `409` that drops a follow-up.
+- [ ] **Backfill `ServerAgent`:** count in-flight creations, stop polling with zero backfills, emit a new map on assignment, add `[id]` to the max-retries error.
+- [ ] **Environment parsing:** warn on a missing port mapping, and skip malformed tickets.
+
+When another item under "Upstream issues", "Jitter", or "API and abstraction improvements" ships in JS and applies to Unity, add it here.
