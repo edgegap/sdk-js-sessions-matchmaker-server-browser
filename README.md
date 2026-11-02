@@ -438,6 +438,8 @@ Maintainers release from `main`:
 2. Create a GitHub release with a tag matching the version, for example `v1.0.0`.
 3. The [release workflow](.github/workflows/release.yml) checks the tag, runs the checks, and publishes to npm with provenance.
 
+Publishing uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), so the workflow needs no npm token. The trusted publisher for `@edgegap/sdk` on npmjs.com points at this repository and `release.yml`. Renaming the workflow file breaks publishing until the trusted publisher is updated.
+
 ## License
 
 [MIT](LICENSE) © Edgegap Technologies
