@@ -2,6 +2,7 @@ export {
   type EventMessages,
   Observable,
   ObservableActionType,
+  type ObservableChange,
   type ObservableEvent,
   type Subscriber,
 } from './observable.ts'

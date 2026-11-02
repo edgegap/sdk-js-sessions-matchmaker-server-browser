@@ -5,7 +5,6 @@ import {
   GroupAgent,
   type InjectedTicketDTO,
   ServerAgent,
-  presets,
 } from '../../src/matchmaking/index.ts'
 
 const baseUrl = process.env['EDGEGAP_MM_URL'] ?? ''
@@ -38,7 +37,14 @@ const failed = (type: number) => type === T.Error
 describe.skipIf(!baseUrl || !authToken)('Matchmaking integration (advanced-example)', { timeout: 120_000 }, () => {
   const gameMode = `sdk-js-it-${Date.now()}`
   const request = (isReady = false) => ({
-    ...presets.advancedGroupUpRequest({ Chicago: 20, Montreal: 30 }, 1500, gameMode, ['map-a'], ['2']),
+    profile: 'advanced-example',
+    attributes: {
+      beacons: { Chicago: 20, Montreal: 30 },
+      elo_rating: 1500,
+      selected_game_mode: gameMode,
+      selected_map: ['map-a'],
+      backfill_group_size: ['2'],
+    },
     is_ready: isReady,
   })
   const agents: Array<{ dispose(): void }> = []

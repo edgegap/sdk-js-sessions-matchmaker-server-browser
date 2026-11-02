@@ -23,11 +23,20 @@ export type Subscriber<T, E extends ObservableEvent = ObservableEvent> = (
   event: E,
 ) => void
 
+export interface ObservableChange<T, E extends ObservableEvent = ObservableEvent> {
+  type: ObservableActionType
+  message: string
+  event: E
+  current: Readonly<T> | null
+  previous: Readonly<T> | null
+}
+
 export class Observable<T, E extends ObservableEvent = ObservableEvent> {
-  private _current: T | null
-  private _previous: T | null = null
+  private _current: Readonly<T> | null
+  private _previous: Readonly<T> | null = null
   private _lastError: string | null = null
   private subscribers: Subscriber<T, E>[] = []
+  private iterators = new Set<() => void>()
   private readonly messages: EventMessages<E> | undefined
 
   constructor(initial: T | null = null, messages?: EventMessages<E>) {
@@ -35,11 +44,11 @@ export class Observable<T, E extends ObservableEvent = ObservableEvent> {
     this.messages = messages
   }
 
-  get current(): T | null {
+  get current(): Readonly<T> | null {
     return this._current
   }
 
-  get previous(): T | null {
+  get previous(): Readonly<T> | null {
     return this._previous
   }
 
@@ -59,6 +68,42 @@ export class Observable<T, E extends ObservableEvent = ObservableEvent> {
 
   clear(): void {
     this.subscribers = []
+    this.iterators.forEach((end) => end())
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<ObservableChange<T, E>> {
+    const buffer: ObservableChange<T, E>[] = []
+    let waiting: ((result: IteratorResult<ObservableChange<T, E>>) => void) | null = null
+    let done = false
+
+    const end = (): IteratorResult<ObservableChange<T, E>> => {
+      done = true
+      unsubscribe()
+      this.iterators.delete(end)
+      waiting?.({ done: true, value: undefined })
+      waiting = null
+      return { done: true, value: undefined }
+    }
+
+    const unsubscribe = this.subscribe((observable, type, message, event) => {
+      const change = { type, message, event, current: observable.current, previous: observable.previous }
+      if (!waiting) return void buffer.push(change)
+      waiting({ done: false, value: change })
+      waiting = null
+    })
+    this.iterators.add(end)
+
+    return {
+      next: () => {
+        if (buffer.length > 0) return Promise.resolve({ done: false, value: buffer.shift()! })
+        if (done) return Promise.resolve({ done: true, value: undefined })
+        return new Promise((resolve) => (waiting = resolve))
+      },
+      return: () => Promise.resolve(end()),
+      [Symbol.asyncIterator]() {
+        return this
+      },
+    }
   }
 
   _notify(event: E, type: ObservableActionType = ObservableActionType.Log): void {

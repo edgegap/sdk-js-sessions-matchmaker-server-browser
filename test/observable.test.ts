@@ -94,6 +94,83 @@ describe('Observable', () => {
     expect(third).toHaveBeenCalledOnce()
   })
 
+  describe('async iteration', () => {
+    it('yields buffered and later changes in order, with state snapshots', async () => {
+      const observable = new Observable<{ id: string }>(null)
+      const iterator = observable[Symbol.asyncIterator]()
+
+      observable._update({ id: 'a' }, { code: 'created' })
+      observable._notify({ code: 'polling' })
+
+      expect((await iterator.next()).value).toMatchObject({
+        type: ObservableActionType.Update,
+        message: 'created',
+        current: { id: 'a' },
+        previous: null,
+      })
+      expect((await iterator.next()).value).toMatchObject({ type: ObservableActionType.Log, message: 'polling' })
+      const later = iterator.next()
+      observable._update({ id: 'b' }, { code: 'updated' })
+
+      expect((await later).value).toEqual({
+        type: ObservableActionType.Update,
+        message: 'updated',
+        event: { code: 'updated' },
+        current: { id: 'b' },
+        previous: { id: 'a' },
+      })
+    })
+
+    it('unsubscribes when the loop breaks', async () => {
+      const observable = new Observable(0)
+      const seen: string[] = []
+      const loop = (async () => {
+        for await (const change of observable) {
+          seen.push(change.message)
+          if (seen.length === 2) break
+        }
+      })()
+
+      observable._notify({ code: 'one' })
+      observable._notify({ code: 'two' })
+      await loop
+      observable._notify({ code: 'three' })
+
+      expect(seen).toEqual(['one', 'two'])
+      const subscriber = vi.fn()
+      observable.subscribe(subscriber)
+      observable._notify({ code: 'four' })
+      expect(subscriber).toHaveBeenCalledOnce()
+    })
+
+    it('drains buffered changes, then ends when cleared', async () => {
+      const observable = new Observable(0)
+      const iterator = observable[Symbol.asyncIterator]()
+      observable._notify({ code: 'last' })
+
+      observable.clear()
+
+      expect(await iterator.next()).toMatchObject({ done: false, value: { message: 'last' } })
+      expect(await iterator.next()).toEqual({ done: true, value: undefined })
+    })
+
+    it('ends a waiting loop when cleared', async () => {
+      const observable = new Observable(0)
+      const seen: string[] = []
+      const loop = (async () => {
+        for await (const change of observable) seen.push(change.message)
+        return 'ended'
+      })()
+
+      observable._notify({ code: 'one' })
+      await Promise.resolve()
+      observable.clear()
+
+      await expect(loop).resolves.toBe('ended')
+      expect(seen).toEqual(['one'])
+    })
+  })
+
   it('delivers to subscribers registered at emit time only', () => {
     const observable = new Observable(0)
     const late = vi.fn()

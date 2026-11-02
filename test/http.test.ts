@@ -69,7 +69,7 @@ describe('SafeHttpRequest', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(1049)
+    await vi.advanceTimersByTimeAsync(999)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -95,13 +95,13 @@ describe('SafeHttpRequest', () => {
     expect(onSuccess).toHaveBeenCalledWith('ok', expect.objectContaining({ status: 200 }))
   })
 
-  it('waits Retry-After seconds plus jitter', async () => {
+  it('waits Retry-After seconds plus up to 20% jitter', async () => {
     fetchMock
       .mockResolvedValueOnce(respond(503, '', { 'Retry-After': '5' }))
       .mockResolvedValueOnce(respond(200))
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn())
-    await vi.advanceTimersByTimeAsync(5049)
+    await vi.advanceTimersByTimeAsync(5499)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -125,7 +125,7 @@ describe('SafeHttpRequest', () => {
       .mockResolvedValueOnce(respond(200))
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn())
-    await vi.advanceTimersByTimeAsync(4049)
+    await vi.advanceTimersByTimeAsync(4399)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -205,7 +205,7 @@ describe('SafeHttpRequest', () => {
       .mockResolvedValueOnce(respond(200))
 
     new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn(), new RetryParameters(3, () => 10))
-    await vi.advanceTimersByTimeAsync(2050)
+    await vi.advanceTimersByTimeAsync(2200)
     expect(fetchMock).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(9999)
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -239,6 +239,42 @@ describe('SafeHttpRequest', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls[0]![1]!.signal!.aborted).toBe(true)
     callbacks.forEach((callback) => expect(callback).not.toHaveBeenCalled())
+  })
+
+  it.each([
+    [0, 2000],
+    [0.999, 2399],
+  ])('never retries before Retry-After (random %d)', async (random, wait) => {
+    vi.mocked(Math.random).mockReturnValue(random)
+    fetchMock.mockResolvedValueOnce(respond(429, '', { 'Retry-After': '2' })).mockResolvedValueOnce(respond(200))
+
+    new SafeHttpRequest().get(URL, 'token', vi.fn(), vi.fn())
+    await vi.advanceTimersByTimeAsync(wait - 1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels one request through its signal without affecting others', async () => {
+    fetchMock.mockImplementationOnce(hangUntilAborted)
+    fetchMock.mockResolvedValueOnce(respond(500))
+    fetchMock.mockResolvedValue(respond(200, 'ok'))
+    const http = new SafeHttpRequest()
+    const controller = new AbortController()
+    const cancelled = [vi.fn(), vi.fn(), vi.fn(), vi.fn()] as const
+    const onSuccess = vi.fn()
+
+    http.get(URL, 'token', cancelled[0], cancelled[1], undefined, controller.signal)
+    http.get(URL, 'token', cancelled[2], cancelled[3], undefined, controller.signal)
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    http.get(URL, 'token', onSuccess, vi.fn())
+    await vi.runAllTimersAsync()
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[0]![1]!.signal!.aborted).toBe(true)
+    cancelled.forEach((callback) => expect(callback).not.toHaveBeenCalled())
+    expect(onSuccess).toHaveBeenCalledWith('ok', expect.objectContaining({ status: 200 }))
   })
 
   it('logs exceptions thrown by callbacks instead of rejecting', async () => {

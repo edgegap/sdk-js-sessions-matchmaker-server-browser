@@ -1,5 +1,5 @@
 import { Logger } from './logger.ts'
-import { jitter } from './timers.ts'
+import { delay, jitter } from './timers.ts'
 
 export interface HttpResponse {
   status: number
@@ -63,9 +63,7 @@ export class RetryParameters {
 
 export class SafeHttpRequest {
   readonly timeoutSeconds: number
-  private controllers = new Set<AbortController>()
-  private timers = new Set<ReturnType<typeof setTimeout>>()
-  private disposed = false
+  private readonly lifetime = new AbortController()
 
   constructor(timeoutSeconds = 0) {
     this.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 3
@@ -77,8 +75,9 @@ export class SafeHttpRequest {
     onSuccess: HttpSuccess,
     onError: HttpError,
     retryParameters?: RetryParameters,
+    signal?: AbortSignal,
   ): void {
-    this.send('GET', url, authToken, undefined, onSuccess, onError, retryParameters)
+    this.send('GET', url, authToken, undefined, onSuccess, onError, retryParameters, this.scope(signal))
   }
 
   post(
@@ -88,8 +87,9 @@ export class SafeHttpRequest {
     onSuccess: HttpSuccess,
     onError: HttpError,
     retryParameters?: RetryParameters,
+    signal?: AbortSignal,
   ): void {
-    this.send('POST', url, authToken, body, onSuccess, onError, retryParameters)
+    this.send('POST', url, authToken, body, onSuccess, onError, retryParameters, this.scope(signal))
   }
 
   patch(
@@ -99,8 +99,9 @@ export class SafeHttpRequest {
     onSuccess: HttpSuccess,
     onError: HttpError,
     retryParameters?: RetryParameters,
+    signal?: AbortSignal,
   ): void {
-    this.send('PATCH', url, authToken, body, onSuccess, onError, retryParameters)
+    this.send('PATCH', url, authToken, body, onSuccess, onError, retryParameters, this.scope(signal))
   }
 
   delete(
@@ -109,16 +110,17 @@ export class SafeHttpRequest {
     onSuccess: HttpSuccess,
     onError: HttpError,
     retryParameters?: RetryParameters,
+    signal?: AbortSignal,
   ): void {
-    this.send('DELETE', url, authToken, undefined, onSuccess, onError, retryParameters)
+    this.send('DELETE', url, authToken, undefined, onSuccess, onError, retryParameters, this.scope(signal))
   }
 
   dispose(): void {
-    this.disposed = true
-    this.timers.forEach(clearTimeout)
-    this.timers.clear()
-    this.controllers.forEach((controller) => controller.abort())
-    this.controllers.clear()
+    this.lifetime.abort()
+  }
+
+  private scope(signal?: AbortSignal): AbortSignal {
+    return signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal
   }
 
   private send(
@@ -129,9 +131,10 @@ export class SafeHttpRequest {
     onSuccess: HttpSuccess,
     onError: HttpError,
     retry: RetryParameters = new RetryParameters(),
+    scope: AbortSignal,
     delaySeconds?: number,
   ): void {
-    if (this.disposed) return
+    if (scope.aborted) return
 
     const onRetryableError: HttpError = (error, response) => {
       if (retry.remainingAttempts <= 0 || !isRetryable(response.status)) return onError(error, response)
@@ -149,20 +152,15 @@ export class SafeHttpRequest {
         onSuccess,
         onError,
         retry,
-        retryAfter === null ? retry.backoffSeconds() : jitter(parseRetryAfter(retryAfter)),
+        scope,
+        retryAfter === null ? retry.backoffSeconds() : jitter(parseRetryAfter(retryAfter), 1, 1.2),
       )
     }
 
-    const request = () =>
-      this.fetch(method, url, authToken, body, onSuccess, onRetryableError)
+    const request = () => this.fetch(method, url, authToken, body, scope, onSuccess, onRetryableError)
 
     if (delaySeconds === undefined) return request()
-
-    const timer = setTimeout(() => {
-      this.timers.delete(timer)
-      request()
-    }, delaySeconds * 1000)
-    this.timers.add(timer)
+    delay(delaySeconds, scope, request)
   }
 
   private fetch(
@@ -170,39 +168,32 @@ export class SafeHttpRequest {
     url: string,
     authToken: string,
     body: string | undefined,
+    scope: AbortSignal,
     onSuccess: HttpSuccess,
     onError: HttpError,
   ): void {
-    const controller = new AbortController()
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      controller.abort()
-    }, this.timeoutSeconds * 1000)
-    this.controllers.add(controller)
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(), this.timeoutSeconds * 1000)
 
     fetch(url, {
       method,
       headers: { Authorization: authToken, 'Content-Type': 'application/json' },
       body,
-      signal: controller.signal,
+      signal: AbortSignal.any([scope, timeout.signal]),
     })
       .then(async (response) => ({ response, text: await response.text() }))
-      .finally(() => {
-        clearTimeout(timer)
-        this.controllers.delete(controller)
-      })
+      .finally(() => clearTimeout(timer))
       .then(
         ({ response, text }) => {
-          if (this.disposed) return
+          if (scope.aborted) return
           const result = { status: response.status, headers: response.headers }
           if (response.ok) return onSuccess(text, result)
           const reason = `HTTP/1.1 ${response.status} ${response.statusText}`.trim()
           onError(`HTTP ${response.status}: ${reason}\n${text}`, result)
         },
         (error: unknown) => {
-          if (this.disposed) return
-          const reason = timedOut ? 'Request timeout' : (error as Error).message
+          if (scope.aborted) return
+          const reason = timeout.signal.aborted ? 'Request timeout' : (error as Error).message
           onError(`HTTP 0: ${reason}\n`, { status: 0, headers: null })
         },
       )

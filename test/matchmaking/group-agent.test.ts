@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { type BeaconDTO, HttpRequestError, ObservableActionType as T } from '../../src/index.ts'
-import { GroupAgent, type GroupUpResponseDTO, presets } from '../../src/matchmaking/index.ts'
+import { GroupAgent, type GroupUpResponseDTO, MatchmakingError } from '../../src/matchmaking/index.ts'
 import { mockServer, recordEventObjects, recordEvents, silenceConsole } from '../helpers.ts'
 
 const BASE = 'https://mm.example.com'
@@ -17,7 +17,7 @@ const member = (overrides: Partial<GroupUpResponseDTO> = {}): GroupUpResponseDTO
   ...overrides,
 })
 
-const REQUEST = presets.simpleGroupUpRequest({ Chicago: 20 })
+const REQUEST = { profile: 'simple-example', attributes: { beacons: { Chicago: 20 } }, is_ready: false }
 
 describe('GroupAgent', () => {
   let server: ReturnType<typeof mockServer>
@@ -492,6 +492,192 @@ describe('GroupAgent', () => {
         Chicago: 0,
       })
     })
+  })
+
+  describe('jitter', () => {
+    it.each([
+      [0, 800],
+      [0.999, 1199],
+    ])('polls after 0.8 to 1.2 times the backoff (random %d)', async (random, wait) => {
+      vi.mocked(Math.random).mockReturnValue(random)
+      const { agent } = start({ pollingBackoffSeconds: 1 })
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      await vi.advanceTimersByTimeAsync(wait - 1)
+      expect(server.count('GET /groups/g1/members/m1')).toBe(0)
+      await vi.advanceTimersByTimeAsync(2)
+      expect(server.count('GET /groups/g1/members/m1')).toBe(1)
+    })
+  })
+
+  describe('nextAssignment', () => {
+    const ASSIGNMENT = { fqdn: 'game.pr.edgegap.net', public_ip: '1.2.3.4', ports: {} } as never
+
+    it('resolves with the assignment once the host is assigned', async () => {
+      server.on('GET /groups/g1/members/m1', [
+        { status: 200, body: member({ status: 'SEARCHING' }) },
+        { status: 200, body: member({ status: 'HOST_ASSIGNED', assignment: ASSIGNMENT }) },
+      ])
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+
+      const assignment = agent.nextAssignment()
+      await vi.advanceTimersByTimeAsync(1050 * 2)
+
+      await expect(assignment).resolves.toEqual(ASSIGNMENT)
+    })
+
+    it('keeps waiting while a previous group is abandoned for the new one', async () => {
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+      server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'HOST_ASSIGNED', assignment: ASSIGNMENT }) })
+
+      agent.createGroup(REQUEST, true)
+      const assignment = agent.nextAssignment()
+      agent.createGroup(REQUEST)
+      await vi.advanceTimersByTimeAsync(1050)
+
+      await expect(assignment).resolves.toEqual(ASSIGNMENT)
+    })
+
+    it('rejects when the group is cancelled', async () => {
+      server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'CANCELLED' }) })
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+
+      const assignment = agent.nextAssignment().catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(1050)
+
+      const error = (await assignment) as MatchmakingError
+      expect(error).toBeInstanceOf(MatchmakingError)
+      expect(error.message).toBe('group updated [CANCELLED]')
+      expect(error.event).toEqual({ code: 'updated', status: 'CANCELLED' })
+    })
+
+    it('rejects when matchmaking fails', async () => {
+      server.on('GET /groups/g1/members/m1', { status: 403, body: { message: 'forbidden' } })
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+
+      const assignment = agent.nextAssignment().catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(1050)
+
+      expect(await assignment).toMatchObject({ event: { code: 'polling_failed', reason: 'error' } })
+    })
+
+    it('rejects when matchmaking is stopped or the agent disposed', async () => {
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      const stopped = agent.nextAssignment().catch((error: unknown) => error)
+      agent.stopMatchmaking()
+      agent.createGroup(REQUEST, true)
+      const disposed = agent.nextAssignment().catch((error: unknown) => error)
+      agent.dispose()
+
+      expect(await stopped).toMatchObject({ message: 'Matchmaking stopped.' })
+      expect(await disposed).toMatchObject({ message: 'Matchmaking stopped.' })
+    })
+
+    it('rejects right away without matchmaking in progress', async () => {
+      const { agent } = start()
+
+      await expect(agent.nextAssignment()).rejects.toThrow('No matchmaking in progress.')
+    })
+
+    it('rejects once the group is abandoned and matchmaking ends', async () => {
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+      const assignment = agent.nextAssignment().catch((error: unknown) => error)
+
+      agent.stopMatchmaking()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(await assignment).toBeInstanceOf(MatchmakingError)
+      await expect(agent.nextAssignment()).rejects.toThrow('No matchmaking in progress.')
+    })
+  })
+
+  describe('async iteration', () => {
+    it('yields group changes until the agent is disposed', async () => {
+      server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'SEARCHING' }) })
+      const { agent } = start()
+      const seen: Array<[string, string | null | undefined]> = []
+      const loop = (async () => {
+        for await (const { event, current } of agent.group) seen.push([event.code, current?.status])
+      })()
+
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(1050)
+      agent.dispose()
+      await loop
+
+      expect(seen).toEqual([
+        ['created', null],
+        ['updated', 'SEARCHING'],
+      ])
+    })
+  })
+
+  it('emits a new state object for every group change', async () => {
+    server.on('GET /groups/g1/members/m1', { status: 200, body: member({ status: 'SEARCHING' }) })
+    const { agent } = start()
+    const states: Array<[unknown, unknown]> = []
+    agent.group.subscribe((obs) => states.push([obs.previous, obs.current]))
+
+    agent.createGroup(REQUEST, true)
+    await vi.advanceTimersByTimeAsync(1050)
+    const [created, updated] = states
+
+    expect(updated![0]).toBe(created![1])
+    expect(updated![1]).not.toBe(updated![0])
+    expect(created![1]).toEqual(member())
+  })
+
+  it('cleans up abort listeners across many sessions', async () => {
+    const live = new Map<AbortSignal, Set<unknown>>()
+    const { addEventListener, removeEventListener } = EventTarget.prototype
+    vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(function (this: AbortSignal, ...args) {
+      if (args[0] === 'abort') live.set(this, (live.get(this) ?? new Set()).add(args[1]))
+      return addEventListener.apply(this, args)
+    })
+    vi.spyOn(AbortSignal.prototype, 'removeEventListener').mockImplementation(function (this: AbortSignal, ...args) {
+      if (args[0] === 'abort') live.get(this)?.delete(args[1])
+      return removeEventListener.apply(this, args)
+    })
+    server.on('GET /locations/beacons', { status: 200, body: { count: 0, beacons: [] } })
+    const { agent } = start({ logPollingUpdates: true })
+
+    for (let i = 0; i < 30; i++) {
+      agent.createGroup(REQUEST, true)
+      void agent.nextAssignment().catch(() => {})
+      await vi.advanceTimersByTimeAsync(1050)
+      void agent.beacons().catch(() => {})
+    }
+    agent.stopMatchmaking()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const listeners = [...live].filter(([signal]) => !signal.aborted).map(([, set]) => set.size)
+    expect(Math.max(0, ...listeners)).toBeLessThanOrEqual(2)
+  })
+
+  it('rejects pending beacon requests on dispose', async () => {
+    vi.mocked(fetch).mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))),
+        ),
+    )
+    const { agent } = start()
+
+    const beacons = agent.beacons().catch((error: unknown) => error)
+    agent.dispose()
+
+    expect(await beacons).toMatchObject({ message: 'GroupAgent disposed.' })
   })
 
   it('dispose stops polling, timers, and subscribers', async () => {

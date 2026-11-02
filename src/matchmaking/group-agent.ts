@@ -1,9 +1,9 @@
-import type { BeaconDTO, BeaconsResponseDTO } from '../dtos.ts'
+import type { BeaconDTO, BeaconsResponseDTO, DeploymentDTO } from '../dtos.ts'
 import { type HttpResponse, HttpRequestError } from '../http.ts'
 import { Logger } from '../logger.ts'
 import { Observable, ObservableActionType, type Subscriber } from '../observable.ts'
 import { type Ping, stubPing } from '../ping.ts'
-import { Timers, jitter } from '../timers.ts'
+import { child, delay, jitter } from '../timers.ts'
 import { Api } from './api.ts'
 import type { GroupUpRequestDTO, GroupUpResponseDTO, MonitorResponseDTO } from './dtos.ts'
 import { type GroupEvent, type MonitorEvent, groupMessages, monitorMessages } from './events.ts'
@@ -18,6 +18,22 @@ export interface GroupAgentOptions {
   logGroupUpdates?: boolean
   logPollingUpdates?: boolean
   ping?: Ping
+}
+
+export class MatchmakingError extends Error {
+  readonly event: GroupEvent | null
+
+  constructor(message: string, event: GroupEvent | null = null) {
+    super(message)
+    this.name = 'MatchmakingError'
+    this.event = event
+  }
+}
+
+const ended = (): AbortController => {
+  const controller = new AbortController()
+  controller.abort()
+  return controller
 }
 
 export class GroupAgent<A = unknown> {
@@ -37,10 +53,9 @@ export class GroupAgent<A = unknown> {
 
   private api: Api | null = null
   private ping: Ping
-  private timers = new Timers()
   private _owner = false
-  private polling = false
-  private session = 0
+  private readonly lifetime = new AbortController()
+  private session = ended()
 
   constructor(options: GroupAgentOptions) {
     this.baseUrl = options.baseUrl
@@ -65,19 +80,30 @@ export class GroupAgent<A = unknown> {
           code: monitor.status.toLowerCase() === 'healthy' ? 'healthy' : 'unhealthy',
         }),
       (error) => this.monitor._error({ code: 'monitor_failed', detail: error }, null),
+      this.lifetime.signal,
     )
   }
 
   beacons(): Promise<BeaconsResponseDTO> {
-    return new Promise((resolve, reject) =>
+    const signal = this.lifetime.signal
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(new MatchmakingError('GroupAgent disposed.'))
+      if (signal.aborted) return onAbort()
+
+      signal.addEventListener('abort', onAbort, { once: true })
       this.api!.getBeacons(
-        (beacons) => resolve(beacons),
+        (beacons) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(beacons)
+        },
         (error, response) => {
+          signal.removeEventListener('abort', onAbort)
           this.monitor._error({ code: 'beacons_failed', detail: error })
           reject(new HttpRequestError(error, response))
         },
-      ),
-    )
+        signal,
+      )
+    })
   }
 
   async measureBeaconsRoundTripTime(
@@ -94,6 +120,28 @@ export class GroupAgent<A = unknown> {
     )
   }
 
+  nextAssignment(): Promise<DeploymentDTO> {
+    const signal = this.session.signal
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(new MatchmakingError('No matchmaking in progress.'))
+
+      const settle = (outcome: () => void) => {
+        unsubscribe()
+        signal.removeEventListener('abort', onAbort)
+        outcome()
+      }
+      const onAbort = () => settle(() => reject(new MatchmakingError('Matchmaking stopped.')))
+      const unsubscribe = this.group.subscribe((group, type, message, event) => {
+        const status = event.code === 'updated' ? event.status : null
+        if (status === 'HOST_ASSIGNED') return settle(() => resolve(group.current!.assignment!))
+        if (status === 'CANCELLED' || (type === ObservableActionType.Error && event.code !== 'conflict')) {
+          settle(() => reject(new MatchmakingError(message, event)))
+        }
+      })
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
   resumeMatchmaking(group: GroupUpResponseDTO, abandon = false): void {
     if (this.group.current !== null && !abandon) {
       this.group._error({ code: 'conflict' })
@@ -102,8 +150,7 @@ export class GroupAgent<A = unknown> {
 
     this.stopMatchmaking(() => {
       this.group._update(group, { code: 'resumed' })
-      this.polling = true
-      this.startPollingGroup()
+      this.pollGroup(this.session.signal)
     })
   }
 
@@ -113,18 +160,19 @@ export class GroupAgent<A = unknown> {
       return
     }
 
-    this.stopMatchmaking(() =>
+    this.stopMatchmaking(() => {
+      const signal = this.session.signal
       this.api!.createGroup(
         group,
         (created) => {
           this.group._update(created, { code: 'created' })
           this._owner = true
-          this.polling = true
-          this.delayPollingGroup()
+          this.schedulePoll(this.startPolling(signal))
         },
         (error) => this.group._error({ code: 'create_failed', detail: error }),
-      ),
-    )
+        signal,
+      )
+    })
   }
 
   joinGroup(member: GroupUpRequestDTO<A>, groupId: string, abandon = false): void {
@@ -133,20 +181,21 @@ export class GroupAgent<A = unknown> {
       return
     }
 
-    this.stopMatchmaking(() =>
+    this.stopMatchmaking(() => {
+      const signal = this.session.signal
       this.api!.createGroupMember(
         member,
         groupId,
         (joined) => {
           this.group._update(joined, { code: 'joined' })
           this._owner = false
-          this.polling = true
-          this.delayPollingGroup()
+          this.schedulePoll(this.startPolling(signal))
         },
         (error, response) =>
           this.group._error({ code: response.status === 404 ? 'not_found' : 'join_failed', detail: error }),
-      ),
-    )
+        signal,
+      )
+    })
   }
 
   setReady(isReady: boolean): void {
@@ -167,36 +216,36 @@ export class GroupAgent<A = unknown> {
           this.group._notify({ code: 'member_update_failed' }, ObservableActionType.Warn)
         else this.group._error({ code: 'update_failed', detail: error })
       },
+      this.session.signal,
     )
   }
 
   stopMatchmaking(onCompleted?: () => void): void {
-    this.polling = false
-    this.session++
+    this.session.abort()
+    this.session = child(this.lifetime.signal)
+    const signal = this.session.signal
+    const complete = () => (onCompleted ? onCompleted() : this.session.abort())
 
     const current = this.group.current
-    if (current?.group_id == null) {
-      onCompleted?.()
-      return
-    }
+    if (current?.group_id == null) return complete()
 
     const onAbandoned = () => {
       this.group._update(null, { code: 'abandoned' })
-      onCompleted?.()
+      complete()
     }
     const onAbandonError = (error: string, response: HttpResponse) =>
-      this.onStopMatchmakingError(error, response, onCompleted)
+      this.onStopMatchmakingError(error, response, signal, onCompleted)
 
     if (this._owner) {
-      this.api!.deleteGroup(current.group_id, onAbandoned, onAbandonError)
+      this.api!.deleteGroup(current.group_id, onAbandoned, onAbandonError, signal)
     } else {
-      this.api!.deleteGroupMember(current.group_id, current.member_id, onAbandoned, onAbandonError)
+      this.api!.deleteGroupMember(current.group_id, current.member_id, onAbandoned, onAbandonError, signal)
     }
   }
 
   initialize(
-    onMonitorUpdate: Subscriber<MonitorResponseDTO, MonitorEvent>,
-    onGroupUpdate: Subscriber<GroupUpResponseDTO, GroupEvent>,
+    onMonitorUpdate?: Subscriber<MonitorResponseDTO, MonitorEvent>,
+    onGroupUpdate?: Subscriber<GroupUpResponseDTO, GroupEvent>,
   ): void {
     if (!this.baseUrl?.trim()) throw new Error('BaseUrl not declared.')
     if (!this.authToken?.trim()) throw new Error('AuthToken not declared.')
@@ -204,29 +253,34 @@ export class GroupAgent<A = unknown> {
     this.api = new Api(this.authToken, this.baseUrl, this.requestTimeoutSeconds)
 
     Logger.subscribeLogger(this.monitor, 'MM', 'Monitor')
-    this.monitor.subscribe(onMonitorUpdate)
+    if (onMonitorUpdate) this.monitor.subscribe(onMonitorUpdate)
 
     Logger.subscribeLogger(this.group, 'MM', 'Group', this.logGroupUpdates)
-    this.group.subscribe(onGroupUpdate)
+    if (onGroupUpdate) this.group.subscribe(onGroupUpdate)
 
     this.status()
   }
 
   dispose(): void {
-    this.polling = false
-    this.timers.dispose()
-    this.api?.dispose()
     this.monitor.clear()
     this.group.clear()
+    this.lifetime.abort()
+    this.api?.dispose()
   }
 
-  private startPollingGroup(consecutiveErrors = 0, session = this.session): void {
-    if (!this.polling) {
-      if (this.logPollingUpdates) this.group._notify({ code: 'polling_stopped' })
-      return
+  private startPolling(session: AbortSignal): AbortController {
+    const loop = child(session)
+    if (this.logPollingUpdates) {
+      loop.signal.addEventListener('abort', () => this.group._notify({ code: 'polling_stopped' }), { once: true })
     }
-    if (session !== this.session) return
+    return loop
+  }
 
+  private pollGroup(session: AbortSignal): void {
+    this.poll(this.startPolling(session))
+  }
+
+  private poll(loop: AbortController, consecutiveErrors = 0): void {
     if (this.logPollingUpdates) {
       this.group._notify({
         code: 'polling',
@@ -240,66 +294,61 @@ export class GroupAgent<A = unknown> {
       current.group_id,
       current.member_id,
       (group) => {
-        if (session !== this.session) return
         if (this.group.current === null || group.status === this.group.current.status) {
-          this.delayPollingGroup()
+          this.schedulePoll(loop)
           return
         }
 
         this.group._update(group, { code: 'updated', status: group.status })
-        const status = this.group.current!.status
-        status === 'HOST_ASSIGNED' || status === 'CANCELLED'
-          ? this.expireGroup()
-          : this.delayPollingGroup()
+        if (group.status !== 'HOST_ASSIGNED' && group.status !== 'CANCELLED') return this.schedulePoll(loop)
+
+        loop.abort()
+        this.expireGroup()
       },
       (error, response) => {
-        if (session !== this.session) return
         if (consecutiveErrors + 1 > this.maxConsecutivePollingErrors) {
           this.group._error({ code: 'polling_failed', reason: 'max_retries', detail: error })
           this.stopMatchmaking()
           return
         }
         if (response.status === 429 || response.status >= 500) {
-          this.delayPollingGroup(consecutiveErrors + 1)
+          this.schedulePoll(loop, consecutiveErrors + 1)
           return
         }
         this.group._error({ code: 'polling_failed', reason: 'error', detail: error })
         this.stopMatchmaking()
       },
+      loop.signal,
     )
   }
 
-  private delayPollingGroup(consecutiveErrors = 0): void {
-    const session = this.session
-    this.timers.delay(jitter(this.pollingBackoffSeconds), () =>
-      this.startPollingGroup(consecutiveErrors, session),
-    )
+  private schedulePoll(loop: AbortController, consecutiveErrors = 0): void {
+    delay(jitter(this.pollingBackoffSeconds), loop.signal, () => this.poll(loop, consecutiveErrors))
   }
 
   private expireGroup(): void {
-    this.polling = false
-    const session = this.session
-    this.timers.delay(this.removeGroupSeconds, () => {
-      if (session === this.session) this.group._update(null, { code: 'removed' })
+    delay(this.removeGroupSeconds, this.session.signal, () => {
+      this.group._update(null, { code: 'removed' })
+      this.session.abort()
     })
   }
 
   private onStopMatchmakingError(
     error: string,
     response: HttpResponse,
+    session: AbortSignal,
     onCompleted?: () => void,
   ): void {
     if (response.status === 409) {
       this.group._notify({ code: 'abandon_failed', reason: 'match_found' }, ObservableActionType.Warn)
       if (onCompleted) this.group._notify({ code: 'restart_skipped' }, ObservableActionType.Warn)
-      this.polling = true
-      this.startPollingGroup()
+      this.pollGroup(session)
       return
     }
 
     if (response.status === 404) this.group._update(null, { code: 'abandon_failed', reason: 'not_found' })
     else this.group._error({ code: 'abandon_failed', reason: 'error', detail: error }, null)
 
-    onCompleted?.()
+    onCompleted ? onCompleted() : this.session.abort()
   }
 }

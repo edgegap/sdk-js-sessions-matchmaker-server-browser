@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MatchEnvironment, presets } from '../../src/matchmaking/index.ts'
+import { MatchEnvironment } from '../../src/matchmaking/index.ts'
 
 const TICKET = {
   id: 't1',
@@ -69,31 +69,5 @@ describe('MatchEnvironment.fromEnv', () => {
     expect(Object.keys(env.tickets)).toEqual(['t2'])
     expect(warn).toHaveBeenCalledOnce()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Couldn't parse variable 'MM_TICKET_t1'"))
-  })
-})
-
-describe('presets', () => {
-  it('build the sample group-up requests', () => {
-    expect(presets.simpleGroupUpRequest({ Chicago: 20 }, true)).toEqual({
-      profile: 'simple-example',
-      attributes: { beacons: { Chicago: 20 } },
-      is_ready: true,
-    })
-    expect(presets.backfillGroupUpRequest({ Chicago: 20 }, ['2'])).toEqual({
-      profile: 'backfill-example',
-      attributes: { beacons: { Chicago: 20 }, backfill_group_size: ['2'] },
-      is_ready: false,
-    })
-    expect(presets.advancedGroupUpRequest({ Chicago: 20 }, 1500, 'ffa', ['dust'], ['2'])).toEqual({
-      profile: 'advanced-example',
-      attributes: {
-        beacons: { Chicago: 20 },
-        elo_rating: 1500,
-        selected_game_mode: 'ffa',
-        selected_map: ['dust'],
-        backfill_group_size: ['2'],
-      },
-      is_ready: false,
-    })
   })
 })

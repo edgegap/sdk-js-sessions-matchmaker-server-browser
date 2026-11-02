@@ -328,6 +328,7 @@ describe('ServerAgent', () => {
 
       expect(events.slice(2)).toEqual([
         [T.Error, 'polling failed (reached maximum retries) [b1]'],
+        [T.Log, 'polling stopped'],
         [T.Log, 'abandoned [b1]'],
         [T.Update, 'removed [b1]'],
         [T.Log, 'abandoned [b2]'],
@@ -349,11 +350,11 @@ describe('ServerAgent', () => {
       expect(onCompleted).toHaveBeenCalledOnce()
       expect(agent.backfills.current).toEqual({})
       expect(events.slice(2)).toEqual([
+        [T.Log, 'polling stopped'],
         [T.Log, 'abandoned [b1]'],
         [T.Update, 'removed [b1]'],
         [T.Log, 'abandoned [b2]'],
         [T.Update, 'removed [b2]'],
-        [T.Log, 'polling stopped'],
       ])
     })
 
@@ -390,6 +391,65 @@ describe('ServerAgent', () => {
         [T.Update, 'removed [b1]'],
       ])
     })
+  })
+
+  describe('immutable state', () => {
+    it('replaces assignments instead of mutating them', async () => {
+      server.on('GET /backfills/b1', {
+        status: 200,
+        body: backfill('b1', { status: 'ASSIGNED', assigned_ticket: ticket('t2') }),
+      })
+      const { agent } = start({ t1: ticket('t1') })
+      const initial = agent.assignments
+
+      agent.addBackfills()
+      await vi.advanceTimersByTimeAsync(1050)
+      const assigned = agent.assignments
+      agent.abandonPlayer('t1')
+
+      expect(Object.keys(initial)).toEqual(['t1'])
+      expect(Object.keys(assigned)).toEqual(['t1', 't2'])
+      expect(Object.keys(agent.assignments)).toEqual(['t2'])
+    })
+
+    it('replaces connection times instead of mutating them', () => {
+      const { agent } = start({ t1: ticket('t1'), t2: ticket('t2') })
+      const initial = agent.connectedAt
+
+      agent.playerConnected('t1')
+      const connected = agent.connectedAt
+      agent.abandonPlayer('t1')
+
+      expect(initial.size).toBe(0)
+      expect([...connected.keys()]).toEqual(['t1'])
+      expect(agent.connectedAt.size).toBe(0)
+    })
+  })
+
+  it('never exceeds the target team size when backfills are added from an event handler', async () => {
+    const { agent } = start({}, { targetTeamSize: 2 })
+    agent.backfills.subscribe(() => agent.addBackfills())
+
+    agent.addBackfills()
+    agent.addBackfills()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(server.count('POST /backfills')).toBe(2)
+  })
+
+  it.each([
+    [0, 800],
+    [0.999, 1199],
+  ])('polls backfills after 0.8 to 1.2 times the backoff (random %d)', async (random, wait) => {
+    vi.mocked(Math.random).mockReturnValue(random)
+    const { agent } = start({}, { targetTeamSize: 1 })
+    agent.addBackfills()
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(wait - 1)
+    expect(server.count('GET /backfills/b1')).toBe(0)
+    await vi.advanceTimersByTimeAsync(2)
+    expect(server.count('GET /backfills/b1')).toBe(1)
   })
 
   it('leaves no timers when disposed from the creation handler', async () => {

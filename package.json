@@ -1,6 +1,6 @@
 {
   "name": "@edgegap/sdk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Edgegap Matchmaking SDK for browser games and their Node, Bun, or Deno game servers.",
   "keywords": [
     "edgegap",

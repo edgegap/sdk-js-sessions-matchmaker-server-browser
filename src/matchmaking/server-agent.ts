@@ -1,6 +1,6 @@
 import { Logger } from '../logger.ts'
 import { Observable, ObservableActionType, type Subscriber } from '../observable.ts'
-import { Timers, jitter } from '../timers.ts'
+import { child, countdown, delay, jitter } from '../timers.ts'
 import { Api } from './api.ts'
 import type {
   BackfillAttributes,
@@ -51,15 +51,13 @@ export class ServerAgent<A = unknown> {
 
   readonly monitor: Observable<MonitorResponseDTO, MonitorEvent> = new Observable(null, monitorMessages)
   readonly backfills: Observable<Backfills<A>, BackfillEvent> = new Observable({}, backfillMessages)
-  readonly assignments: Record<string, InjectedTicketDTO<A>> = {}
 
   private api: Api | null = null
-  private timers = new Timers()
-  private _connectedAt = new Map<string, Date>()
-  private polling = false
+  private _assignments: Readonly<Record<string, InjectedTicketDTO<A>>> = {}
+  private _connectedAt: ReadonlyMap<string, Date> = new Map()
   private creatingBackfills = 0
-  private backfillRunning = false
-  private backfillPending = false
+  private readonly lifetime = new AbortController()
+  private polling: AbortController | null = null
 
   constructor(options: ServerAgentOptions) {
     this.baseUrl = options.baseUrl
@@ -75,29 +73,34 @@ export class ServerAgent<A = unknown> {
     this.logPollingUpdates = options.logPollingUpdates ?? false
   }
 
+  get assignments(): Readonly<Record<string, InjectedTicketDTO<A>>> {
+    return this._assignments
+  }
+
   get connectedAt(): ReadonlyMap<string, Date> {
     return this._connectedAt
   }
 
   abandonPlayer(ticketId: string, expiredGrace = false): boolean {
-    if (ticketId in this.assignments) {
-      delete this.assignments[ticketId]
-      this._connectedAt.delete(ticketId)
-      Logger.log(
-        `MM | Backfill - ticket abandoned${expiredGrace ? ' (connection grace period expired)' : ''} [${ticketId}]`,
-      )
-      this.addBackfills()
-      return true
+    if (!(ticketId in this._assignments)) {
+      Logger.warn(`MM | Backfill - ticket abandon failed [${ticketId}]`)
+      return false
     }
 
-    Logger.warn(`MM | Backfill - ticket abandon failed [${ticketId}]`)
-    return false
+    const { [ticketId]: _abandoned, ...remaining } = this._assignments
+    this._assignments = remaining
+    this.disconnect(ticketId)
+    Logger.log(
+      `MM | Backfill - ticket abandoned${expiredGrace ? ' (connection grace period expired)' : ''} [${ticketId}]`,
+    )
+    this.addBackfills()
+    return true
   }
 
   playerConnected(ticketId: string): InjectedTicketDTO<A> | null {
-    const ticket = this.assignments[ticketId]
+    const ticket = this._assignments[ticketId]
     if (!ticket) return null
-    if (!this._connectedAt.has(ticketId)) this._connectedAt.set(ticketId, new Date())
+    if (!this._connectedAt.has(ticketId)) this._connectedAt = new Map([...this._connectedAt, [ticketId, new Date()]])
     return ticket
   }
 
@@ -112,23 +115,7 @@ export class ServerAgent<A = unknown> {
   }
 
   addBackfills(): void {
-    if (this.backfillRunning) {
-      this.backfillPending = true
-      return
-    }
-
-    this.backfillRunning = true
-    try {
-      do {
-        this.backfillPending = false
-        const plannedBackfills =
-          this.targetTeamSize - (Object.keys(this.assignments).length + this.backfillCount())
-        for (let i = 0; i < plannedBackfills; ++i) this.startNewBackfill()
-      } while (this.backfillPending)
-    } finally {
-      this.backfillRunning = false
-      this.backfillPending = false
-    }
+    while (!this.lifetime.signal.aborted && this.seatsTaken() < this.targetTeamSize) this.startNewBackfill()
   }
 
   abandonBackfill(backfillId: string, onCompleted?: () => void): void {
@@ -141,7 +128,7 @@ export class ServerAgent<A = unknown> {
       backfillId,
       () => {
         this.backfills._notify({ code: 'abandoned', backfillId })
-        this.removeBackfill(this.backfills.current!, backfillId, onCompleted)
+        this.removeBackfill(backfillId, onCompleted)
       },
       (error, response) => {
         this.backfills._notify(
@@ -150,23 +137,23 @@ export class ServerAgent<A = unknown> {
             : { code: 'abandon_failed', backfillId, reason: 'error', detail: error },
           ObservableActionType.Warn,
         )
-        this.removeBackfill(this.backfills.current!, backfillId, onCompleted)
+        this.removeBackfill(backfillId, onCompleted)
       },
     )
   }
 
   abandonAllBackfills(onCompleted?: () => void): void {
-    this.polling = false
+    this.polling?.abort()
 
     const ids = Object.keys(this.backfills.current!)
-    const finished = this.timers.countdown(ids.length, () => onCompleted?.())
+    const finished = countdown(ids.length, this.lifetime.signal, () => onCompleted?.())
     ids.forEach((id) => this.abandonBackfill(id, finished))
   }
 
   initialize(
     tickets: Record<string, InjectedTicketDTO<A>>,
-    onMonitorUpdate: Subscriber<MonitorResponseDTO, MonitorEvent>,
-    onBackfillUpdate: Subscriber<Backfills<A>, BackfillEvent>,
+    onMonitorUpdate?: Subscriber<MonitorResponseDTO, MonitorEvent>,
+    onBackfillUpdate?: Subscriber<Backfills<A>, BackfillEvent>,
   ): void {
     if (!this.baseUrl?.trim()) throw new Error('BaseUrl not declared.')
     if (!this.authToken?.trim()) throw new Error('AuthToken not declared.')
@@ -174,10 +161,10 @@ export class ServerAgent<A = unknown> {
     this.api = new Api(this.authToken, this.baseUrl, this.requestTimeoutSeconds)
 
     Logger.subscribeLogger(this.monitor, 'MM', 'Monitor')
-    this.monitor.subscribe(onMonitorUpdate)
+    if (onMonitorUpdate) this.monitor.subscribe(onMonitorUpdate)
 
     Logger.subscribeLogger(this.backfills, 'MM', 'Backfill', this.logBackfillUpdates)
-    this.backfills.subscribe(onBackfillUpdate)
+    if (onBackfillUpdate) this.backfills.subscribe(onBackfillUpdate)
 
     Object.values(tickets).forEach((ticket) => this.assign(ticket))
 
@@ -185,58 +172,55 @@ export class ServerAgent<A = unknown> {
   }
 
   dispose(): void {
-    this.polling = false
-    this.timers.dispose()
-    this.api?.dispose()
     this.monitor.clear()
     this.backfills.clear()
+    this.lifetime.abort()
+    this.api?.dispose()
   }
 
-  private backfillCount(): number {
-    return Object.keys(this.backfills.current!).length + this.creatingBackfills
+  private seatsTaken(): number {
+    return Object.keys(this._assignments).length + Object.keys(this.backfills.current!).length + this.creatingBackfills
+  }
+
+  private disconnect(ticketId: string): void {
+    if (!this._connectedAt.has(ticketId)) return
+    this._connectedAt = new Map([...this._connectedAt].filter(([id]) => id !== ticketId))
   }
 
   private assign(ticket: InjectedTicketDTO<A>): void {
-    this.assignments[ticket.id] = assignedTicket(ticket)
-    this._connectedAt.delete(ticket.id)
-    this.timers.delay(this.connectionGracePeriodSeconds, () => {
-      if (ticket.id in this.assignments && !this._connectedAt.has(ticket.id)) {
+    this._assignments = { ...this._assignments, [ticket.id]: assignedTicket(ticket) }
+    this.disconnect(ticket.id)
+    delay(this.connectionGracePeriodSeconds, this.lifetime.signal, () => {
+      if (ticket.id in this._assignments && !this._connectedAt.has(ticket.id)) {
         this.abandonPlayer(ticket.id, true)
       }
     })
   }
 
-  private removeBackfill(backfills: Backfills<A>, backfillId: string, onCompleted?: () => void): void {
-    if (backfillId in backfills) {
-      const { [backfillId]: _removed, ...remaining } = backfills
-      this.backfills._update(remaining, { code: 'removed', backfillId })
-    } else {
-      this.backfills._notify({ code: 'remove_failed', backfillId }, ObservableActionType.Warn)
-    }
+  private removeBackfill(backfillId: string, onCompleted?: () => void): void {
+    const { [backfillId]: removed, ...remaining } = this.backfills.current!
+    if (removed) this.backfills._update(remaining, { code: 'removed', backfillId })
+    else this.backfills._notify({ code: 'remove_failed', backfillId }, ObservableActionType.Warn)
 
     onCompleted?.()
   }
 
   private startNewBackfill(): void {
-    if (Object.keys(this.assignments).length + this.backfillCount() >= this.targetTeamSize) {
+    if (this.seatsTaken() >= this.targetTeamSize) {
       this.backfills._error({ code: 'capacity_reached' })
       return
     }
 
     this.creatingBackfills++
     this.api!.createBackfill<A>(
-      { profile: this.profile, attributes: this.backfillAttributes, tickets: this.assignments },
+      { profile: this.profile, attributes: this.backfillAttributes, tickets: this._assignments },
       (backfill) => {
         this.creatingBackfills--
         this.backfills._update(
           { ...this.backfills.current, [backfill.id]: backfill },
           { code: 'created', backfillId: backfill.id },
         )
-
-        if (!this.polling && this.backfillCount() > 0) {
-          this.polling = true
-          this.timers.delay(jitter(this.pollingBackoffSeconds), () => this.startPollingBackfills())
-        }
+        this.startPolling()
       },
       (error) => {
         this.creatingBackfills--
@@ -245,14 +229,17 @@ export class ServerAgent<A = unknown> {
     )
   }
 
-  private startPollingBackfills(consecutiveErrors = 0, failedIds: string[] = []): void {
-    if (!this.polling) {
-      this.backfills._notify({ code: 'polling_stopped' })
-      return
-    }
+  private startPolling(): void {
+    if (this.polling && !this.polling.signal.aborted) return
 
+    const loop = child(this.lifetime.signal)
+    loop.signal.addEventListener('abort', () => this.backfills._notify({ code: 'polling_stopped' }), { once: true })
+    this.polling = loop
+    delay(jitter(this.pollingBackoffSeconds), loop.signal, () => this.pollBackfills(loop))
+  }
+
+  private pollBackfills(loop: AbortController, consecutiveErrors = 0, failedIds: string[] = []): void {
     if (consecutiveErrors > this.maxConsecutivePollingErrors) {
-      this.polling = false
       failedIds
         .filter((id) => id in this.backfills.current!)
         .forEach((backfillId) =>
@@ -263,11 +250,7 @@ export class ServerAgent<A = unknown> {
     }
 
     const current = Object.values(this.backfills.current!)
-    if (current.length === 0) {
-      this.polling = false
-      this.backfills._notify({ code: 'polling_stopped' })
-      return
-    }
+    if (current.length === 0) return loop.abort()
 
     if (this.logPollingUpdates) {
       this.backfills._notify({
@@ -278,9 +261,9 @@ export class ServerAgent<A = unknown> {
     }
 
     const failed: string[] = []
-    const finished = this.timers.countdown(current.length, () => {
+    const finished = countdown(current.length, loop.signal, () => {
       const next = failed.length > 0 ? consecutiveErrors + 1 : 0
-      this.timers.delay(jitter(this.pollingBackoffSeconds), () => this.startPollingBackfills(next, failed))
+      delay(jitter(this.pollingBackoffSeconds), loop.signal, () => this.pollBackfills(loop, next, failed))
     })
 
     current.forEach((b) =>
@@ -294,7 +277,7 @@ export class ServerAgent<A = unknown> {
               { ...this.backfills.current, [backfill.id]: backfill },
               { code: 'assigned', backfillId: backfill.id, ticketId: ticket.id },
             )
-            this.removeBackfill(this.backfills.current!, backfill.id)
+            this.removeBackfill(backfill.id)
           }
           finished()
         },
@@ -305,7 +288,7 @@ export class ServerAgent<A = unknown> {
               { code: 'polling_failed', backfillId: b.id, reason: 'not_found' },
               ObservableActionType.Warn,
             )
-            this.removeBackfill(this.backfills.current!, b.id, () => this.startNewBackfill())
+            this.removeBackfill(b.id, () => this.startNewBackfill())
           } else if (response.status !== 429 && response.status < 500) {
             this.backfills._error({ code: 'polling_failed', backfillId: b.id, reason: 'error', detail: error })
             this.abandonBackfill(b.id, () => this.startNewBackfill())

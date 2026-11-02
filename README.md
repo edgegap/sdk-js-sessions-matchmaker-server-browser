@@ -8,8 +8,10 @@ TypeScript SDK for [Edgegap Matchmaking](https://docs.edgegap.com/learn/matchmak
 
 - Zero runtime dependencies, ESM and CommonJS builds, full type definitions.
 - A single-file browser build for HTML games without a bundler.
-- Retries with backoff on network failures, `429`, and `5xx` responses.
+- Retries with jittered backoff on network failures, `429`, and `5xx` responses.
 - Typed events for every state change, so handlers branch on an event `code` instead of parsing messages.
+- Callbacks, promises (`await agent.nextAssignment()`), or async iteration (`for await (const change of agent.group)`), whichever fits your game loop.
+- Request and response types mirror the API's JSON payloads exactly, including snake_case keys.
 
 ## Contents
 
@@ -50,14 +52,14 @@ The package has two entry points:
 | Import | Contents |
 | --- | --- |
 | `@edgegap/sdk` | Shared utilities: `getConnectionUrl`, `DeploymentEnvironment`, `Observable`, `Logger`, HTTP helpers |
-| `@edgegap/sdk/matchmaking` | `GroupAgent`, `ServerAgent`, `MatchEnvironment`, `Api`, request and response types, `presets` |
+| `@edgegap/sdk/matchmaking` | `GroupAgent`, `ServerAgent`, `MatchEnvironment`, `MatchmakingError`, `Api`, request and response types |
 
 ### Without a bundler
 
 Load the browser build from a CDN. It exposes everything under the `Edgegap` global, with Matchmaking under `Edgegap.matchmaking`:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.0.0/dist/browser/edgegap.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js"></script>
 <script>
   const agent = new Edgegap.matchmaking.GroupAgent({ baseUrl: '...', authToken: '...' })
 </script>
@@ -67,7 +69,7 @@ Or as an ES module:
 
 ```html
 <script type="module">
-  import { matchmaking, getConnectionUrl } from 'https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.0.0/dist/browser/edgegap.js'
+  import { matchmaking, getConnectionUrl } from 'https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.js'
 </script>
 ```
 
@@ -93,12 +95,12 @@ npm audit signatures
 When loading the SDK from a CDN, pin an exact version and add a [Subresource Integrity](https://developer.mozilla.org/docs/Web/Security/Subresource_Integrity) hash, so the browser refuses a modified file:
 
 ```sh
-curl -s https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.0.0/dist/browser/edgegap.iife.js | openssl dgst -sha384 -binary | openssl base64 -A
+curl -s https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js | openssl dgst -sha384 -binary | openssl base64 -A
 ```
 
 ```html
 <script
-  src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.0.0/dist/browser/edgegap.iife.js"
+  src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js"
   integrity="sha384-<hash from the command above>"
   crossorigin="anonymous"
 ></script>
@@ -117,20 +119,16 @@ const agent = new GroupAgent<{ beacons: Record<string, number> }>({
   authToken: '<matchmaker client token>',
 })
 
-agent.initialize(
-  (_monitor, _type, message) => console.log('matchmaker', message),
-  (group, _type, _message, event) => {
-    if (event.code !== 'updated' || event.status !== 'HOST_ASSIGNED') return
-
-    const socket = new WebSocket(getConnectionUrl(group.current!.assignment!, 'gameport'))
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ ticketId: group.current!.ticket_id })))
-  },
-)
+agent.initialize()
 
 const { beacons } = await agent.beacons()
 const latencies = await agent.measureBeaconsRoundTripTime(beacons)
 
 agent.createGroup({ profile: 'my-profile', attributes: { beacons: latencies }, is_ready: true }, true)
+const assignment = await agent.nextAssignment()
+
+const socket = new WebSocket(getConnectionUrl(assignment, 'gameport'))
+socket.addEventListener('open', () => socket.send(JSON.stringify({ ticketId: agent.group.current!.ticket_id })))
 ```
 
 `profile` and `attributes` must match a profile in your Matchmaker configuration. `gameport` is the port name from your app version.
@@ -144,11 +142,12 @@ agent.createGroup({ profile: 'my-profile', attributes: { beacons: latencies }, i
 - `agent.monitor` holds the Matchmaker health.
 - `agent.group` holds the current group: `group_id`, `member_id`, `ticket_id`, `status` (`SEARCHING`, `TEAM_FOUND`, `MATCH_FOUND`, `HOST_ASSIGNED`, or `CANCELLED`), and the `assignment` once a server is ready.
 
-Call `initialize(onMonitorUpdate, onGroupUpdate)` once before anything else. It checks that `baseUrl` and `authToken` are set, subscribes your callbacks, and requests the Matchmaker status.
+Call `initialize(onMonitorUpdate?, onGroupUpdate?)` once before anything else. It checks that `baseUrl` and `authToken` are set, subscribes the optional callbacks, and requests the Matchmaker status.
 
 | Method | Description |
 | --- | --- |
 | `createGroup(request, abandon?)` | Creates a group with this player as its owner, then starts polling. |
+| `nextAssignment()` | Resolves with the server assignment once the group reaches `HOST_ASSIGNED`. |
 | `joinGroup(request, groupId, abandon?)` | Joins an existing group, then starts polling. |
 | `setReady(isReady)` | Marks this player ready or not ready. The group starts searching once every member is ready. |
 | `resumeMatchmaking(group, abandon?)` | Resumes polling a group saved earlier, for example after a page reload. |
@@ -160,6 +159,35 @@ Call `initialize(onMonitorUpdate, onGroupUpdate)` once before anything else. It 
 Pass `abandon: true` to replace a group the agent already tracks. Without it, the call fails with a `conflict` error.
 
 After `HOST_ASSIGNED` or `CANCELLED`, polling stops, and the group is cleared with a `removed` event after `removeGroupSeconds` (30 by default).
+
+Each call to `createGroup`, `joinGroup`, `resumeMatchmaking`, or `stopMatchmaking` starts a new matchmaking session and cancels everything still pending from the previous one: polling timers, requests in flight, and the delayed group removal. `dispose()` cancels everything for good.
+
+#### Promises and loops
+
+`nextAssignment()` waits for the session started by your last `createGroup`, `joinGroup`, or `resumeMatchmaking` call, so call it after one of them. It rejects with a `MatchmakingError` when:
+
+- the group is cancelled, or matchmaking fails, with the triggering event in `error.event`
+- matchmaking is stopped, restarted with another call, or the agent is disposed
+- no matchmaking is in progress
+
+```ts
+import { MatchmakingError } from '@edgegap/sdk/matchmaking'
+
+agent.createGroup(request, true)
+try {
+  connect(await agent.nextAssignment())
+} catch (error) {
+  if (error instanceof MatchmakingError) showRetryButton(error.message)
+}
+```
+
+Every observable is also an async iterable. The loop receives each change as `{ type, message, event, current, previous }` and ends when the agent is disposed:
+
+```ts
+for await (const { event, current } of agent.group) {
+  if (event.code === 'updated') showStatus(current?.status)
+}
+```
 
 #### Playing with friends
 
@@ -226,7 +254,7 @@ Game servers can still be starting when the group reaches `HOST_ASSIGNED`. Retry
 | `baseUrl` | required | Matchmaker URL |
 | `authToken` | required | Matchmaker client token |
 | `requestTimeoutSeconds` | `3` | Timeout for each request |
-| `pollingBackoffSeconds` | `1` | Delay between polls |
+| `pollingBackoffSeconds` | `1` | Delay between polls, randomized by ±20% so clients that start together spread out |
 | `maxConsecutivePollingErrors` | `10` | Polling errors in a row before matchmaking stops |
 | `removeGroupSeconds` | `30` | Delay before a finished group is cleared |
 | `logGroupUpdates` | `true` | Log group changes to the console |
@@ -306,7 +334,7 @@ agent.addBackfills()
 
 Players that don't call `playerConnected` within `connectionGracePeriodSeconds` (60 by default) are abandoned automatically. Clients get their ticket ID from `group.current.ticket_id` and should send it when they connect, as in the [Quick start](#quick-start).
 
-`agent.backfills` holds the open backfills by ID, `agent.assignments` the assigned players by ticket ID, and `agent.connectedAt` the time each player connected.
+`agent.backfills` holds the open backfills by ID, `agent.assignments` the assigned players by ticket ID, and `agent.connectedAt` the time each player connected. All three are replaced with new objects on every change, never modified in place, so a reference you keep is a stable snapshot.
 
 ### Tokens
 
@@ -327,12 +355,12 @@ Agents log state changes to the console with an `Edgegap` prefix. Turn them off 
 
 Every observable calls its subscribers with `(observable, type, message, event)`:
 
-- `observable.current` and `observable.previous` hold the new and old state, and `observable.error` holds the last error message.
+- `observable.current` and `observable.previous` hold the new and old state, and `observable.error` holds the last error message. State is typed read-only and is always replaced, never modified in place, so comparing `previous` with `current` always shows what changed.
 - `type` is an `ObservableActionType`: `Log`, `Update`, `Warn`, or `Error`.
 - `message` is a human-readable description.
 - `event` is a typed object with a `code` and its details. Branch on `event.code`, since messages may change between versions.
 
-`subscribe` returns an unsubscribe function, so observables also work with React's `useSyncExternalStore`.
+`subscribe` returns an unsubscribe function, so observables also work with React's `useSyncExternalStore`. Observables are also async iterables, see [Promises and loops](#promises-and-loops).
 
 ### `GroupEvent` (`agent.group`)
 
@@ -386,6 +414,18 @@ Update to the latest version, including a new major version:
 npm install @edgegap/sdk@latest
 ```
 
+### Upgrading to 1.1
+
+1.1.0 includes changes that may need code updates:
+
+- `presets` is removed. Build group-up requests as plain objects matching your Matchmaker profile, for example `{ profile: 'simple-example', attributes: { beacons }, is_ready: false }`.
+- `observable.current` and `observable.previous` are typed `Readonly`. Code that modified state in place must copy it instead.
+- `ServerAgent.assignments` and `connectedAt` are replaced on every change. Read them from the agent each time instead of keeping a reference to watch for changes.
+- Polling and retry delays vary by ±20% instead of adding up to 0.1s, and retries after `Retry-After` wait up to 20% longer than requested.
+- The backfill `polling stopped` event is emitted as soon as polling stops, before the backfills it abandons.
+
+### CDN
+
 When loading from a CDN, change the version in the URL and regenerate the integrity hash. A range such as `@edgegap/sdk@1` follows new releases automatically, but it can't be combined with an integrity hash.
 
 ## Contributing
@@ -434,9 +474,15 @@ The other tests never ready a full group, so they don't start deployments.
 
 Maintainers release from `main`:
 
-1. Bump `version` in `package.json` and commit it.
-2. Create a GitHub release with a tag matching the version, for example `v1.0.0`.
-3. The [release workflow](.github/workflows/release.yml) checks the tag, runs the checks, and publishes to npm with provenance.
+1. Bump `version` in `package.json` with `npm version <major|minor|patch> --no-git-tag-version`, and commit it.
+2. Create an annotated tag matching the version, with the release notes as its message, and push it:
+
+   ```sh
+   git tag -a v1.1.0 -F release-notes.md
+   git push origin v1.1.0
+   ```
+
+3. The [release workflow](.github/workflows/release.yml) checks the tag, runs the checks, publishes to npm with provenance, and creates the GitHub release from the tag message.
 
 Publishing uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), so the workflow needs no npm token. The trusted publisher for `@edgegap/sdk` on npmjs.com points at this repository and `release.yml`. Renaming the workflow file breaks publishing until the trusted publisher is updated.
 
