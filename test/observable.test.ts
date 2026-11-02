@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Observable, ObservableActionType } from '../src/index.ts'
 
 describe('Observable', () => {
-  it('starts with the initial value, like new T() in Unity', () => {
+  it('starts with the initial value', () => {
     const observable = new Observable<{ id?: string }>({})
 
     expect(observable.current).toEqual({})

@@ -1,160 +1,60 @@
 # Roadmap
 
-Phase 1 is a faithful port of the [Unity SDK v3.5.6](https://github.com/edgegap/sdk-unity-sessions-matchmaker-server-browser) to JavaScript/TypeScript. Nothing in this file is implemented in phase 1 unless it is listed under "Phase 1 decisions", "Forced by platform", or "Phase 1 additions", or checked off under "Upstream issues". Everything else is a candidate for phase 2, to be decided after internal review and testing of the parity release.
+Planned and considered work for the Edgegap JavaScript SDK. Nothing here is a commitment or has a date. To request a feature or discuss an item, [open an issue](https://github.com/edgegap/sdk-js-sessions-matchmaker-server-browser/issues).
 
-References like `GroupClient.cs:350` point to the Unity SDK source at v3.5.6. "OpenAPI spec" means the Matchmaker 3.2.0 spec generated for the simple example configuration.
+## Server Browser
 
-## Phase 1 decisions
+- [ ] **Server Browser support** under `@edgegap/sdk/server-browser`: a `ClientAgent` to list, filter, sort, and join server instances from the browser, a `ServerAgent` to register instances and keep their slots up to date from game servers, and filter and sort query builders. Browser access depends on CORS support in the Server Browser service, including `Retry-After` in `Access-Control-Expose-Headers`.
 
-- **Package:** `@edgegap/sdk`, with `matchmaking` and `server-browser` subpath exports.
-- **Types mirror the wire JSON.** TypeScript interfaces use the real API keys (`group_id`, `is_ready`, `available_seats`, ...), so responses are used as parsed and requests are sent as built, with no mapping layer. This keeps user-defined `attributes` and `metadata` (whose keys must match the Matchmaker profile and the Server Browser index fields) in the same shape as the SDK-defined fields. The Unity implementation defines which fields exist. Where the OpenAPI spec leaves out a field Unity sends (`attributes.assignment.request_id` in `POST /backfills`, which the Matchmaker 3.3.3 service accepts), the spec is wrong and the field stays. `tickets.*.team_id` is declared on `InjectedTicketDTO` but never sent: `ServerAgent.cs:276,402` copies tickets into assignments without `TeamID`, and `NullValueHandling.Ignore` drops it. The JS agent copies the same five fields. The spec is only used to sharpen value types:
-  - Port `internal`/`external` are `number` (`string` in `PortMappingDTO`).
-  - Beacon list `count` is `number` (`string` in `BeaconsResponseDTO`).
-  - `status` fields are string-literal unions from the spec's enums, for example `'SEARCHING' | 'TEAM_FOUND' | 'MATCH_FOUND' | 'HOST_ASSIGNED' | 'CANCELLED'`.
-- **SDK-built objects use camelCase.** Objects with no wire format, like `DeploymentEnvironment.fromEnv(env)` (Unity `DeploymentEnvironmentDTO`), use camelCase fields (`requestId`, `selfStopUrl`, ...). Nested API shapes such as `location` and `portMapping` stay snake_case.
-- **Auth tokens are always required.** Every agent throws `AuthToken not declared` without one, as in Unity. Client tokens (Matchmaker, Server Browser) ship in the client build. Keeping the Server Browser client token on a game backend is an optional extension and is out of scope.
-- **`GroupClient` is renamed `GroupAgent`.** This mirrors `ServerAgent` and `ClientAgent`. The old name was legacy.
-- **The legacy ticket `Client` is not ported.** It is `[Obsolete]` in Unity in favor of the group-up flow, and so are its `Assignment` observable and group-ticket helpers. `TicketsRequestDTO` survives only as the base shape of group-up requests. The matching `Api` methods (`/tickets`, `/group-tickets`) are not ported either.
-- **`player_ip` is never sent by `GroupAgent`.** The Matchmaker takes the player's IP from the group create request. The field stays in the request type (it's nullable in the spec) for server-to-server use, but it's omitted when unset, where Newtonsoft would serialize it as `null`.
-- **Upstream bugs are reproduced as-is unless fixed.** Unfixed bugs are pinned by a parity test and listed below. Fixed bugs are checked off in their list and covered by a test of the fixed behavior.
-- **Event messages follow the Unity code.** Where the docs disagree with the code on message text or action types, the SDK emits what the Unity code emits.
+## Latency measurement
 
-## Service constraints that shape the design
+Browsers can't send ICMP, UDP, or raw TCP, and Edgegap ping beacons answer only those, so the default `Ping` reports `0` for every beacon.
 
-- **Matchmaker:** the client token is safe to ship in game clients. Browser access works once the game's origins are whitelisted with `allowed_cors_origins` (exact domains or wildcards) in the Matchmaker configuration. Entries are matched against the full origin: on Matchmaker 3.3.3, `https://*.my-game-server.com` matches, but a bare `localhost` matches neither `http://localhost` nor `http://localhost:5173`. List local dev servers with their full origin, for example `http://localhost:5173`. Preflight requests need no credentials. The Matchmaker never sends `Retry-After`.
-- **Server Browser:** CORS support equivalent to the Matchmaker's is being added to the service. It will expose `Retry-After` through `Access-Control-Expose-Headers`, so browser clients can honor it on `429` and `5xx` responses. `ClientAgent` calls the Server Browser directly from the browser with the client token.
-- **Server tokens** (Matchmaker backfill, Server Browser server API, deployment self-stop) belong only in game servers running on Node, Bun, or Deno. They must never ship in a browser bundle.
+- [ ] Add an HTTP(S) endpoint to beacons, for example `GET /ping` returning `204`, with `Access-Control-Allow-Origin: *` and `Timing-Allow-Origin: *`.
+- [ ] Add an `HttpPing` implementation: one warm-up request to absorb DNS, TCP, and TLS setup, then N timed requests using `PerformanceResourceTiming` (`responseStart - requestStart`), falling back to `performance.now()` deltas.
+- [ ] Consider a WebSocket echo variant, which has lower variance after the handshake and matches the transport browser games use.
+- [ ] Make HTTP ping the browser default, keeping the current behavior as the fallback when beacons are unreachable.
+- [ ] Document that HTTP round-trip times run higher than ICMP. If Matchmaker `latencies` rules assume ICMP, consider calibrating, or put the measurement method in ticket attributes.
+- [ ] Decide whether unmeasured beacons should be left out of `beacons` instead of sent as `0`, which the Matchmaker reads as perfect latency.
+- [ ] Consider TCP-connect timing on Node, Bun, and Deno.
 
-## Forced by platform (in phase 1)
+## API
 
-These deviate from the Unity behavior because the JS platform leaves no reasonable alternative. They are listed here so reviewers know where parity is intentionally broken.
+- [ ] **Promise and async-iterator surface,** such as `await agent.nextAssignment()` and `for await (const event of agent.group)`, for game loops.
+- [ ] **Interop adapters** for RxJS, Svelte stores, React `useSyncExternalStore`, and signals.
+- [ ] **Immutable state updates everywhere,** so `previous` and `current` can always be diffed.
+- [ ] **A single cancellation model,** with one `AbortController` per session or loop instead of internal flags.
+- [ ] **Pluggable `fetch`,** for runtimes without a global one and for instrumentation.
+- [ ] **Move `presets` out of the package.** The example request builders and profile names (`simple-example`, `backfill-example`, `advanced-example`) belong in samples.
+- [ ] **camelCase facade.** Types mirror the API's snake_case JSON so user-defined attributes keep the same shape. Revisit only if users ask for it.
 
-- **No `MonoBehaviour` handler.** Coroutines become `setTimeout`/`fetch`. Unity stops coroutines when the handler is destroyed. JS has no equivalent, so every agent gets a `dispose()` that clears timers, aborts in-flight requests, and removes subscribers.
-- **Query strings are URL-encoded.** `ServerBrowser/Api.cs:164` concatenates `$filter`/`$order` raw. Values are encoded with `encodeURIComponent`, and the `$` in parameter names stays literal.
-- **Connection state is never serialized.** C# hides `BackfillAssignedTicket.ConnectedAt` with `[JsonIgnore]`. The JS agent keeps connection times in a separate map (`connectedAt`), so tickets sent in `POST /backfills` contain only API fields. The other local-only field, `BackfillResponseDTO.CreatedAt`, is set but never read in Unity, so it's dropped.
-- **Response parse failures are reported, not thrown.** In C# (`Api.cs`, every `catch { throw; }`) a parse error escapes into the coroutine runner, and the operation silently stops, which can freeze polling forever. In JS it goes to the error path, so the observable emits the same error message it would for a failed request.
-- **Metadata merge skips `undefined`.** `MetadataDTO.Merge` uses reflection with `??`. C# value types (`int`, `bool`) are never null, so an unset `int` field in an update overwrites the existing value with `0`. In JS an unset field is `undefined` and is skipped.- **No ICMP ping in browsers or without privileges.** See [Ping](#ping-beacons-over-http).
+## Reliability
 
-## Phase 1 additions
-
-This has no Unity equivalent, but browser games can't work without it.
-
-- **`getConnectionUrl(assignment, portName, { tls = true })`.** It returns a WebSocket URL from an assignment (Matchmaker) or a `server` object (Server Browser). Port mappings have a static shape: `internal`, `external`, `link`, `protocol`. `link` is already `{fqdn}:{external}`, so the helper builds `{scheme}://{link}`, which never uses `public_ip` (TLS certificates don't cover raw IPs). A WS port reports `protocol: "Websocket"` whether TLS upgrade is on or not (seen on a live Matchmaker assignment, 2026-10-29), so the caller says which with `tls`. The scheme is chosen like this:
-
-  | `protocol` | Result |
-  | --- | --- |
-  | `WSS`, `HTTPS` | `wss://` |
-  | `Websocket`, `WS`, `HTTP` | `wss://`, or `ws://` with `tls: false`, warning on `https:` pages, where browsers block mixed content |
-  | anything else (`TCP`, `UDP`, `TCP/UDP`) | error naming the port and suggesting `WS` with TLS upgrade. Browsers can't open raw sockets, and game servers can't present a certificate for the deployment FQDN themselves. |
-
-## Ping beacons over HTTP
-
-Browsers can't send ICMP, UDP, or raw TCP. Edgegap ping beacons currently answer only ICMP, UDP, and TCP, so browser clients can't measure latency at all. Unity WebGL builds have the same limit: `Ping.cs:47` returns `-1`, and `MeasureBeaconsRoundTripTime` reports `0` for every city.
-
-Phase 1 ships a stub with the same result:
-
-- `Ping` is an interface (`measure(beacon, requests) => Promise<number>`) that you can inject into `GroupAgent`.
-- The default implementation returns `0` for each beacon (Unity WebGL parity) and logs one warning.
-- Node uses the same stub. TCP-connect timing would be possible there, but it doesn't match the ICMP semantics in Unity, so it is deferred too.
-
-Phase 2, once beacons support HTTP:
-
-- [ ] Add an HTTP(S) endpoint on beacons, for example `GET /ping` returning `204`, with CORS `Access-Control-Allow-Origin: *` and `Timing-Allow-Origin: *`.
-- [ ] Add an `HttpPing` implementation. Do one warm-up request to absorb DNS, TCP, and TLS setup, then take N timed requests using `PerformanceResourceTiming` (`responseStart - requestStart`), falling back to `performance.now()` deltas.
-- [ ] Consider a WebSocket echo variant. It gives lower variance after the handshake and matches the WSS transport browser games actually use.
-- [ ] Make HTTP ping the browser default, and keep the stub as the fallback when beacons are unreachable.
-- [ ] Document that HTTP RTT runs higher than ICMP RTT. If the Matchmaker's `latencies` rules assume ICMP, consider calibrating, or put the measurement method in ticket attributes.
-- [ ] Decide whether unmeasured beacons should be omitted from `beacons` rather than sent as `0`. Today `0` means "unreachable", and the Matchmaker reads it as perfect latency.
-
-## Upstream issues found during the port review
-
-These behaviors exist in Unity v3.5.6. Unchecked items are reproduced as-is in JS, and each has a parity test that pins the current behavior, so a fix shows up as a deliberate test change. Checked items are fixed in JS.
-
-### Shared
-
-- [x] **Request timeouts are not wired through.** `Matchmaking/Api.cs:25` builds `SafeHttpRequest` without a timeout, so `RequestTimeoutSeconds` on `GroupClient`, `ServerAgent`, and `ServerBrowser.ClientAgent` has no effect, and every request uses 3s. `ServerBrowser.ServerAgent` clamps the timeout to the heartbeat interval only after the `Api` is constructed (`ServerAgent.cs:132`), so the clamp does nothing either. Fixed for Matchmaking: both agents pass `requestTimeoutSeconds` to the `Api`. The Server Browser still needs the same fix.
-- [x] **Retries ignore network failures.** `SafeHttpRequest.cs:151` gives up when the response has no headers, for example on DNS errors, connection resets, or timeouts. Those are the failures most worth retrying. Fixed: network failures and timeouts are retried like `5xx`. A timed-out `POST` may have reached the service, so a retry can create a duplicate group or backfill. The orphan expires through the Matchmaker's inactivity removal.
-- [x] **Any status carrying `Retry-After` is retried.** The services send `Retry-After` only on `429` and `5xx`, so this matches Unity in practice. JS retries only network failures, `429`, and `5xx`, and `Retry-After` (optional) only sets the wait.
-- [x] **`Retry-After` is parsed only as seconds.** Fixed: the HTTP-date form waits until that date, or retries right away if the date is in the past.
-- [x] **A custom `BackoffSeconds` is never used for retries.** `SafeHttpRequest.cs:183,193` overwrites `retryParameters.BackoffSeconds` with the default (or the `Retry-After` value) before scheduling each retry, so `new RetryParameters(attempts, backoffSeconds)` only affects the attempt count. Fixed: the custom backoff is kept, and `Retry-After` only sets the wait for the retry it came with.
-- [x] **The first request is delayed when `RemainingAttempts < MaxAttempts`.** `SafeHttpRequest` treats any request with fewer remaining than maximum attempts as a retry. The sample's `new RetryParameters { MaxAttempts = 10 }` (`ServerBrowserServerHandler.cs:246`) leaves `RemainingAttempts = 3`, so its first request waits one backoff. Fixed: only actual retries wait.
-- [x] **`Observable<T>` initializes `Current` to `new T()`, not null.** Guards like `Group.Current is not null && !abandon` (`GroupClient.cs:126,141,168`) therefore fire on the very first call, so `CreateGroup(group)` without `abandon: true` always emits `conflict, abandon and restart`. Every sample passes `abandon: true`, which hides this. Fixed: observables start as `null`, except backfills, which start as an empty map.
-
-### Matchmaking: `GroupAgent` (Unity `GroupClient`)
-
-- [x] **Polling loops can overlap.** `StopMatchmaking` sets `Polling = false`, but a pending `DelayPollingGroup` coroutine is not cancelled. If a new group is created within the backoff window (about 1s), `Polling` is `true` again when the old coroutine wakes, and two loops poll at once. Fixed with a session counter: `stopMatchmaking` starts a new session, and pending timers and in-flight responses from an older session are ignored.
-- [x] **A stale expiry can wipe out a new group.** `ExpireGroup` (`GroupClient.cs:399`) unconditionally sets `Group` to `null` after `RemoveGroupSeconds`. A group created in that window gets wiped with `removed`. Fixed: the expiry belongs to its session.
-- [x] **`StopMatchmaking` can drop the follow-up action after a `409`.** On `409` it resumes polling but never calls `onCompletedDelegate`, so `CreateGroup(..., abandon: true)` silently does nothing when the old group was just matched. Fixed by keeping the behavior, since a matched group can't be deleted, and emitting `restart skipped (match found)` as a `Warn` after `abandon failed (match found)` when a follow-up was requested.
-
-### Matchmaking: `ServerAgent` (backfill)
-
-- [x] **Backfills can be over-provisioned.** `AddBackfills` uses a re-entrancy guard (`BackfillRunning`/`BackfillPending`), but `StartNewBackfill` is fire-and-forget, so the guard never actually overlaps. Capacity is computed from `Backfills.Current`, which updates only when the `POST` response arrives. Two quick `AbandonPlayer` calls can each schedule the full deficit. Fixed: in-flight creations count toward capacity.
-- [x] **An assignment emits an update with no state change.** `Backfills._Update(Backfills.Current, "assigned [...]")` (`ServerAgent.cs:411`) passes the same reference as both previous and current, so subscribers diffing `previous` against `current` see no change. Fixed: `assigned [{id}]` emits a new map holding the `ASSIGNED` backfill, followed by `removed [{id}]`.
-- [x] **Polling keeps running with zero backfills.** Once every backfill is assigned, the loop ticks forever and does nothing until `AbandonAllBackfills` is called. Fixed: polling stops with `polling stopped` and restarts when a backfill is created.
-- [x] **The max-retries error omits the backfill ID.** `polling failed (reached maximum retries)` has no `[id]` suffix, unlike the documented message. Fixed: one error per backfill that failed in the last round, then every backfill is abandoned as before.
-
-### Shared DTOs
-
-- [x] **A missing port mapping crashes environment parsing.** `DeploymentEnvironmentDTO` throws a null-reference error when `ARBITRIUM_PORTS_MAPPING` is absent (`DeploymentEnvironmentDTO.cs:104`), which breaks local runs without a mock environment. Unity also falls back silently on every other missing `ARBITRIUM_*` variable, even though Edgegap always injects all of them. Fixed: parsing never throws, so the same build runs locally and on Edgegap. One warning lists every missing `ARBITRIUM_*` variable, and a malformed value logs the usual parse warning.
-- [x] **A malformed ticket crashes match parsing.** `MatchEnvironmentDTO` throws a null-reference error when one `MM_TICKET_*` variable fails to parse (`MatchEnvironmentDTO.cs:62`). Fixed: the ticket is skipped after the usual parse warning.
-
-### Server Browser: `ClientAgent`
-
-- [ ] **Requesting a page past the end crashes.** `GetNextPage` (`ClientAgent.cs:155`) emits `instance list last page reached` but doesn't return, so it dereferences a null cursor.
-- [ ] **Instance details crash on an empty cache.** `GetInstanceDetails` dereferences `Instances.Current`, which is `null` right after `RefreshList` (`cache deleted`).
-- [ ] **`GetInstanceDetails` mutates the cached list in place.** This has the same "previous equals current" issue as backfill assignment.
-
-### Server Browser: `ServerAgent`
-
-- [ ] **Queued instance metadata is not sent without a slot update.** When there are no confirmations and no slot updates, `FlushConfirmations` calls `FlushInstanceUpdates`. With `FlushingUpdates == false`, that branch does a `GET` and returns (`ServerAgent.cs:458-487`), so metadata queued by `UpdateInstance` is never `PATCH`ed until some slot update happens. `UpdateMode.Greedy` is affected too.
-- [ ] **A slot update failure followed by a recovery `GET` can drop the update.** `FlushingUpdates` is cleared only inside the instance-update callbacks.
-- [ ] **`SlotDTO.ApplyUpdate` is unused.** Remove it, or use it for optimistic local updates.
-- [ ] **Rediscovery after a `404` heartbeat sends stale state.** It re-sends `Instance.Current`, including slot seat counts that may be out of date.
-
-### Server Browser: query compilers
-
-- [ ] **Filter string values are not escaped.** A `'` inside a `StringFilter` or `LiteralFilter` value breaks the query.
-- [ ] **No `or`/grouping.** `FilterCompiler` only joins filters with `and`.
-
-## OpenAPI spec fixes (service side)
-
-The service accepts these fields, and the Unity SDK sends them, but the Matchmaker 3.2.0 OpenAPI spec doesn't declare them, on schemas marked `additionalProperties: false`. The SDK types include them.
-
-- [ ] Add `request_id` to `TicketAssignmentResponse`, as used in `attributes.assignment` of `POST /backfills`.
-- [ ] Add `team_id` to `BackfillTicketMember`.
-
-## Jitter
-
-- [ ] **Proportional jitter (approved for phase 2).** Every delay today is `base + random(0, 0.1s)`: polling (1s), retries (1s), backfill polling (1s), heartbeats (10s). The jitter is a constant 100ms, no matter how long the delay is. Clients that start in sync stay in sync: a lobby that readies up together, a scaling policy deploying many servers at once, or every client retrying after the same `Retry-After`. With 100ms jitter on a 10s heartbeat (1%), 50 servers deployed together still send their heartbeats in tight bursts every cycle. Scaling the jitter with the delay spreads them across the interval. The bounds depend on what the delay guarantees:
-  - **Polling and generic retries:** `base × random(0.8, 1.2)`, for example 0.8–1.2s on a 1s poll. The average rate stays the same.
-  - **`Retry-After`:** `base × random(1.0, 1.2)`, so a client never retries before the server asked it to.
-  - **Heartbeats:** `base × random(0.8, 1.0)`, so jitter never pushes a heartbeat closer to the instance expiry.
-
-  This changes only the timing distribution, not the average request rate.
-
-## API and abstraction improvements
-
-- [x] **Structured events.** Unity handlers branch on message strings, for example `message.Contains("discovery failed")`, and parse IDs out of `[...]` suffixes. Subscribers get a fourth argument, a typed event (`GroupEvent`, `BackfillEvent`, `MonitorEvent`) with a `code`, its parameters (`backfillId`, `ticketId`, `reason`, ...), and the error `detail`. Messages are built from the event, so they stay identical to Unity, and handlers that branch on `code` don't break when the wording changes. The Server Browser branch needs the same change when it's rebased.
-- [ ] **Promise and async-iterator surface.** Phase 1 keeps the observer callbacks. Add `await agent.nextAssignment()` and `for await (const ev of agent.group)` for game loops.
-- [ ] **Interop adapters.** Offer opt-in adapters for RxJS (`from(observable)`), Svelte stores, React `useSyncExternalStore`, and signals. The observable contract already works with `useSyncExternalStore`, because `subscribe` returns an unsubscribe function.
-- [ ] **Immutable state updates.** Never mutate `Current` in place, so `previous`/`current` diffs are always meaningful.
-- [ ] **Single cancellation model.** Replace boolean flags (`Polling`, `FlushingUpdates`, `BackfillRunning`) with one `AbortController` per session or loop.
-- [ ] **Pluggable `fetch`.** Accept a custom `fetch` for runtimes without a global one, and for instrumentation. Phase 1 tests stub the global `fetch`.
-- [ ] **Move sample presets out of the runtime.** `SimpleGroupUpRequestDTO`, `Social*/Cooperative*/Competitive*MetadataDTO`, and the hardcoded profile names (`simple-example`, ...) are sample code shipped in the Unity runtime. Phase 1 mirrors this under a `presets` export.
-- [ ] **camelCase facade.** Phase 1 mirrors the wire JSON. A camelCase layer was considered and rejected, because user-defined keys would need to stay snake_case anyway, leaving mixed casing. Revisit only if users ask for it.
+- [ ] **Proportional jitter.** Every delay adds a constant 0 to 100ms today, so clients that start in sync (a lobby readying together, many servers deployed at once, clients retrying after the same `Retry-After`) stay in sync. Scale jitter with the delay, without changing the average request rate:
+  - Polling and retries: `base × random(0.8, 1.2)`.
+  - `Retry-After`: `base × random(1.0, 1.2)`, so a client never retries earlier than the service asked.
+  - Heartbeats: `base × random(0.8, 1.0)`, so jitter never pushes a heartbeat closer to expiry.
 
 ## Browser and transport
 
-- [ ] **Abandon on page unload.** `StopMatchmaking` on `pagehide` needs `fetch(..., { keepalive: true })`, because normal requests are cancelled during unload.
-- [ ] **Reconnect helper.** Persist group and membership IDs in `localStorage` and auto-call `ResumeMatchmaking` after a reload, as the docs recommend.
-- [ ] **Connection retry helper.** Game servers may still be initializing at `HOST_ASSIGNED`, and the docs tell clients to retry the connection several times. Offer a WebSocket connect-with-retry helper built on `getConnectionUrl`.
-- [ ] **Background-tab timer throttling.** Browsers throttle `setTimeout` in hidden tabs to 1s or slower. Measure the effect on polling and the connection grace period, and consider an opt-in `visibilitychange` resync.
-- [ ] **WebTransport.** Evaluate it as a lower-latency, UDP-like path for browser games, once Edgegap port types support it.
+- [ ] **Abandon on page unload,** using `fetch(..., { keepalive: true })` on `pagehide`.
+- [ ] **Reconnect helper** that saves group and member IDs in `localStorage` and resumes matchmaking after a reload.
+- [ ] **Connection retry helper** built on `getConnectionUrl`, since game servers may still be starting at `HOST_ASSIGNED`.
+- [ ] **Background-tab throttling.** Measure how timer throttling in hidden tabs affects polling and the connection grace period, and consider an opt-in `visibilitychange` resync.
+- [ ] **WebTransport** as a lower-latency, UDP-like path for browser games, once Edgegap ports support it.
 
-## Packaging and DX
+## Developer experience
 
-- [ ] **CDN build.** Publish a `<script type="module">` and IIFE build for single-file HTML games. Phase 1 builds it, but publishing is pending.
-- [ ] **Starter templates.** Vite with Phaser, Three.js, and PlayCanvas starters, plus a Node WS server starter.
-- [ ] **Local mock server.** A mock Matchmaker and Server Browser for offline development, reusing the phase 1 test fixtures.
-- [ ] **AI-assistant docs.** Ship an `llms.txt` and agent rules for vibe-coding tools, so generated code uses the SDK and doesn't call raw APIs.
-- [ ] **Token safety.** Client tokens ship in client builds by design. Server tokens must not. Detect a server token used in a browser (a heuristic on the token scope or prefix, if one exists) and warn loudly.
+- [ ] **Samples:** deployment environment and self-stop, simple matchmaking, region picker, group up, backfill, and Server Browser auto-assign and custom search. Browser clients built with Vite, game servers on Node with `ws`.
+- [ ] **Starter templates** for Vite with Phaser, Three.js, and PlayCanvas, plus a Node WebSocket server.
+- [ ] **Local mock server** for the Matchmaker and Server Browser, for offline development.
+- [ ] **AI-assistant docs:** an `llms.txt` and agent rules, so generated code uses the SDK instead of calling the APIs directly.
+- [ ] **Token safety:** detect a server token used in a browser and warn.
+- [ ] **Bun and Deno in CI.**
+
+## Matchmaker OpenAPI spec
+
+The Matchmaker accepts these fields, and the SDK sends them, but the OpenAPI spec doesn't declare them on schemas marked `additionalProperties: false`:
+
+- [ ] `request_id` in `TicketAssignmentResponse`, as sent in `attributes.assignment` of `POST /backfills`.
+- [ ] `team_id` in `BackfillTicketMember`.

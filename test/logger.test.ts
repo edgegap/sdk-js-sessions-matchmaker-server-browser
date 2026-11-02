@@ -8,7 +8,7 @@ const spyConsole = () => ({
 })
 
 describe('Logger', () => {
-  it('prefixes each level like Unity', () => {
+  it('prefixes each level', () => {
     const console = spyConsole()
 
     Logger.log('a')
