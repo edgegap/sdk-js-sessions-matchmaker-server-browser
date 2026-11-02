@@ -394,7 +394,7 @@ Bug reports and pull requests are welcome on [GitHub](https://github.com/edgegap
 
 ### Setup
 
-Development needs Node.js 20 or later.
+Development needs Node.js 22.18 or later, as required by the build and test tools.
 
 ```sh
 git clone https://github.com/edgegap/sdk-js-sessions-matchmaker-server-browser.git
@@ -428,7 +428,7 @@ The other tests never ready a full group, so they don't start deployments.
 - Write strict TypeScript without `enum`, namespaces, or other TypeScript-only runtime syntax, so the source runs with Node's type stripping.
 - Keep request and response types identical to the API's JSON, including snake_case keys.
 - Add tests for every behavior change. Unit tests use Vitest with fake timers and a stubbed `fetch`.
-- Make sure `npm run typecheck`, `npm test`, and `npm run build` pass before opening a pull request. CI runs them on Node 20, 22, and 24.
+- Make sure `npm run typecheck`, `npm test`, and `npm run build` pass before opening a pull request. CI runs them on Node 22 and 24.
 
 ### Releasing
 
