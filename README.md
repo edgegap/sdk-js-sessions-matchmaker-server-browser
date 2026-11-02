@@ -27,7 +27,7 @@ TypeScript SDK for [Edgegap Matchmaking](https://docs.edgegap.com/learn/matchmak
 
 - **Edgegap:** a [Matchmaker](https://docs.edgegap.com/learn/matchmaking/matchmaker-in-depth) with its URL and auth token, and an app version whose game port uses the `WS` protocol with TLS upgrade enabled, so browsers can connect.
 - **Browsers:** any evergreen browser. The page origin must be listed in the Matchmaker's `allowed_cors_origins` (see [CORS](#cors)).
-- **Servers:** Node.js 18 or later, Bun, or Deno. The SDK needs the global `fetch` and `AbortController`.
+- **Servers:** Node.js 22 or later, Bun, or Deno. The SDK needs the global `fetch` and `AbortController`.
 - **TypeScript (optional):** types ship with the package, no `@types` package needed.
 
 ## Installation
