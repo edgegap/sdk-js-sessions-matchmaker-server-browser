@@ -150,7 +150,7 @@ Call `initialize(onMonitorUpdate?, onGroupUpdate?)` once before anything else. I
 | `nextAssignment()` | Resolves with the server assignment once the group reaches `HOST_ASSIGNED`. |
 | `joinGroup(request, groupId, abandon?)` | Joins an existing group, then starts polling. |
 | `setReady(isReady)` | Marks this player ready or not ready. The group starts searching once every member is ready. |
-| `resumeMatchmaking(group, abandon?)` | Resumes polling a group saved earlier, for example after a page reload. |
+| `resumeMatchmaking(group, abandon?, owner?)` | Resumes polling a group saved earlier, for example after a page reload. Pass `owner` true when this player owns the group. |
 | `stopMatchmaking(onCompleted?)` | Leaves the group, or deletes it if this player owns it. A group that already found a match can't be left. |
 | `beacons()` | Lists Edgegap ping beacons. |
 | `measureBeaconsRoundTripTime(beacons, requests?)` | Returns the latency per beacon city, ready to send as the `beacons` attribute. |
@@ -208,22 +208,25 @@ agent.setReady(true)
 
 #### Surviving a page reload
 
-Save the group when it changes, and resume it when the page loads:
+Save the group and whether this player owns it when the group changes, and resume it when the page loads. Without `owner`, a resumed owner is treated as a member and `stopMatchmaking` can't delete the group:
 
 ```ts
 agent.initialize(onMonitorUpdate, (group) => {
   group.current
-    ? localStorage.setItem('edgegap-group', JSON.stringify(group.current))
+    ? localStorage.setItem('edgegap-group', JSON.stringify({ group: group.current, owner: agent.owner }))
     : localStorage.removeItem('edgegap-group')
 })
 
 const saved = localStorage.getItem('edgegap-group')
-if (saved) agent.resumeMatchmaking(JSON.parse(saved))
+if (saved) {
+  const { group, owner } = JSON.parse(saved)
+  agent.resumeMatchmaking(group, false, owner)
+}
 ```
 
 #### Latency
 
-Browsers can't send the ICMP, UDP, or TCP pings that Edgegap beacons answer, so the default `measureBeaconsRoundTripTime` reports `0` for every beacon and logs one warning. To measure latency another way, pass your own implementation of the `Ping` interface:
+Browsers can't send the ICMP, UDP, or TCP pings that Edgegap beacons answer, so the default `measureBeaconsRoundTripTime` measures nothing, returns no cities, and logs one warning. A beacon without a measurement is always left out, never reported as `0`, so players aren't matched in regions they can't reach. Web clients therefore need a profile without a latency rule, or their own implementation of the `Ping` interface, which resolves with the round trip time in milliseconds or `null` when a beacon can't be measured:
 
 ```ts
 const agent = new GroupAgent({
@@ -259,7 +262,7 @@ Game servers can still be starting when the group reaches `HOST_ASSIGNED`. Retry
 | `removeGroupSeconds` | `30` | Delay before a finished group is cleared |
 | `logGroupUpdates` | `true` | Log group changes to the console |
 | `logPollingUpdates` | `false` | Log every poll |
-| `ping` | reports `0` | Latency measurement, see [Latency](#latency) |
+| `ping` | measures nothing | Latency measurement, see [Latency](#latency) |
 
 ### Game servers
 
@@ -277,7 +280,7 @@ const match = MatchEnvironment.fromEnv(process.env)
 
 `deployment` holds `requestId`, `fqdn`, `publicIp`, `location`, `portMapping`, `selfStopUrl`, `selfStopToken`, and the host resources. `match` holds `matchProfile`, `matchId`, `tickets` (by ticket ID), `groups`, `teams`, and the matched `equality` and `intersection` values.
 
-Parsing never throws, so the same build runs locally. Missing variables are listed in one warning, and malformed values fall back to `null` or `0`.
+Parsing never throws, so the same build runs locally. Missing variables are listed in one warning (the private beacon variables only when `ARBITRIUM_BEACON_ENABLED` is `true`, since Edgegap sets them only then), and malformed values fall back to `null` or `0`.
 
 To stop the deployment once the match is over:
 
@@ -325,11 +328,11 @@ agent.addBackfills()
 | Method | Description |
 | --- | --- |
 | `initialize(tickets, onMonitorUpdate, onBackfillUpdate)` | Registers the players already matched to this server. |
-| `addBackfills()` | Creates backfills until assigned players plus open backfills reach `targetTeamSize`. |
+| `addBackfills()` | Enables backfill and creates backfills until assigned players plus open backfills reach `targetTeamSize`. Seats freed later are refilled until `abandonAllBackfills()`. Backfill is disabled until you call it. |
 | `playerConnected(ticketId)` | Marks a player as connected. Returns the player's ticket, or `null` if the ticket isn't assigned to this server, in which case you should reject the connection. |
-| `abandonPlayer(ticketId)` | Frees a player's seat, for example on disconnect, and creates a backfill for it. |
+| `abandonPlayer(ticketId)` | Frees a player's seat, for example on disconnect, and creates a backfill for it while backfill is enabled. |
 | `abandonBackfill(backfillId, onCompleted?)` | Deletes one backfill. |
-| `abandonAllBackfills(onCompleted?)` | Deletes every backfill, for example when the match starts or the server shuts down. |
+| `abandonAllBackfills(onCompleted?)` | Disables backfill and deletes every backfill, including ones still being created, for example when the match starts or the server shuts down. |
 | `dispose()` | Clears timers, aborts requests, and removes subscribers. |
 
 Players that don't call `playerConnected` within `connectionGracePeriodSeconds` (60 by default) are abandoned automatically. Clients get their ticket ID from `group.current.ticket_id` and should send it when they connect, as in the [Quick start](#quick-start).

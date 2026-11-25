@@ -209,6 +209,7 @@ describe('ServerAgent', () => {
   describe('players', () => {
     it('abandons players that never connect within the grace period', async () => {
       const { agent } = start({ t1: ticket('t1') }, { targetTeamSize: 1 })
+      agent.addBackfills()
 
       await vi.advanceTimersByTimeAsync(60_000)
 
@@ -246,12 +247,23 @@ describe('ServerAgent', () => {
 
     it('counts in-flight creations, so quick abandons fill exactly the open seats', async () => {
       const { agent } = start({ t1: ticket('t1'), t2: ticket('t2') }, { targetTeamSize: 2 })
+      agent.addBackfills()
 
       agent.abandonPlayer('t1')
       agent.abandonPlayer('t2')
       await vi.advanceTimersByTimeAsync(0)
 
       expect(server.count('POST /backfills')).toBe(2)
+    })
+
+    it('creates no backfill for abandoned players until backfill is enabled', async () => {
+      const { agent } = start({ t1: ticket('t1') }, { targetTeamSize: 1 })
+
+      expect(agent.backfillEnabled).toBe(false)
+      agent.abandonPlayer('t1')
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(server.count('POST /backfills')).toBe(0)
     })
 
     it('frees the in-flight slot when a creation fails', async () => {
@@ -356,6 +368,40 @@ describe('ServerAgent', () => {
         [T.Log, 'abandoned [b2]'],
         [T.Update, 'removed [b2]'],
       ])
+    })
+
+    it('disables backfill, so players leaving afterwards open no seats', async () => {
+      const { agent } = start({ t1: ticket('t1') }, { targetTeamSize: 2 })
+      agent.addBackfills()
+      await vi.advanceTimersByTimeAsync(0)
+      const onCompleted = vi.fn()
+
+      agent.abandonAllBackfills(onCompleted)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onCompleted).toHaveBeenCalledOnce()
+      expect(agent.backfillEnabled).toBe(false)
+      agent.abandonPlayer('t1')
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(server.count('POST /backfills')).toBe(1)
+      expect(agent.backfills.current).toEqual({})
+    })
+
+    it('waits for backfills still being created, then deletes them without polling', async () => {
+      const { agent } = start({}, { targetTeamSize: 1 })
+      const onCompleted = vi.fn()
+
+      agent.addBackfills()
+      agent.abandonAllBackfills(onCompleted)
+      expect(onCompleted).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(5_000)
+
+      expect(server.count('POST /backfills')).toBe(1)
+      expect(server.count('DELETE /backfills/b1')).toBe(1)
+      expect(server.count('GET /backfills/b1')).toBe(0)
+      expect(agent.backfills.current).toEqual({})
+      expect(onCompleted).toHaveBeenCalledOnce()
     })
 
     it('completes immediately with no backfills', async () => {

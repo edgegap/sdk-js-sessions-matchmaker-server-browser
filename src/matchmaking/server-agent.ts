@@ -56,6 +56,8 @@ export class ServerAgent<A = unknown> {
   private _assignments: Readonly<Record<string, InjectedTicketDTO<A>>> = {}
   private _connectedAt: ReadonlyMap<string, Date> = new Map()
   private creatingBackfills = 0
+  private _backfillEnabled = false
+  private creationsSettled: Array<() => void> = []
   private readonly lifetime = new AbortController()
   private polling: AbortController | null = null
 
@@ -81,6 +83,15 @@ export class ServerAgent<A = unknown> {
     return this._connectedAt
   }
 
+  /**
+   * True between `addBackfills()` and `abandonAllBackfills()`. While false, no backfill is created,
+   * and seats freed by `abandonPlayer`, expired connection grace periods or failed backfills aren't
+   * refilled.
+   */
+  get backfillEnabled(): boolean {
+    return this._backfillEnabled
+  }
+
   abandonPlayer(ticketId: string, expiredGrace = false): boolean {
     if (!(ticketId in this._assignments)) {
       Logger.warn(`MM | Backfill - ticket abandon failed [${ticketId}]`)
@@ -93,7 +104,7 @@ export class ServerAgent<A = unknown> {
     Logger.log(
       `MM | Backfill - ticket abandoned${expiredGrace ? ' (connection grace period expired)' : ''} [${ticketId}]`,
     )
-    this.addBackfills()
+    this.fillSeats()
     return true
   }
 
@@ -114,8 +125,13 @@ export class ServerAgent<A = unknown> {
     )
   }
 
+  /**
+   * Enables backfill and creates backfills until assigned players plus open backfills reach
+   * `targetTeamSize`. Seats freed later are refilled until `abandonAllBackfills()`.
+   */
   addBackfills(): void {
-    while (!this.lifetime.signal.aborted && this.seatsTaken() < this.targetTeamSize) this.startNewBackfill()
+    this._backfillEnabled = true
+    this.fillSeats()
   }
 
   abandonBackfill(backfillId: string, onCompleted?: () => void): void {
@@ -142,8 +158,20 @@ export class ServerAgent<A = unknown> {
     )
   }
 
+  /**
+   * Disables backfill, stops polling and deletes every backfill, including ones still being created,
+   * for example when the match starts or the server shuts down.
+   */
   abandonAllBackfills(onCompleted?: () => void): void {
+    this._backfillEnabled = false
     this.polling?.abort()
+
+    if (this.creatingBackfills > 0) {
+      this.creationsSettled.push(() => {
+        if (!this.lifetime.signal.aborted) this.abandonAllBackfills(onCompleted)
+      })
+      return
+    }
 
     const ids = Object.keys(this.backfills.current!)
     const finished = countdown(ids.length, this.lifetime.signal, () => onCompleted?.())
@@ -178,6 +206,20 @@ export class ServerAgent<A = unknown> {
     this.api?.dispose()
   }
 
+  private fillSeats(): void {
+    while (this._backfillEnabled && !this.lifetime.signal.aborted && this.seatsTaken() < this.targetTeamSize) {
+      this.startNewBackfill()
+    }
+  }
+
+  private creationSettled(): void {
+    this.creatingBackfills--
+    if (this.creatingBackfills > 0) return
+    const waiting = this.creationsSettled
+    this.creationsSettled = []
+    waiting.forEach((callback) => callback())
+  }
+
   private seatsTaken(): number {
     return Object.keys(this._assignments).length + Object.keys(this.backfills.current!).length + this.creatingBackfills
   }
@@ -206,6 +248,7 @@ export class ServerAgent<A = unknown> {
   }
 
   private startNewBackfill(): void {
+    if (!this._backfillEnabled) return
     if (this.seatsTaken() >= this.targetTeamSize) {
       this.backfills._error({ code: 'capacity_reached' })
       return
@@ -215,16 +258,16 @@ export class ServerAgent<A = unknown> {
     this.api!.createBackfill<A>(
       { profile: this.profile, attributes: this.backfillAttributes, tickets: this._assignments },
       (backfill) => {
-        this.creatingBackfills--
         this.backfills._update(
           { ...this.backfills.current, [backfill.id]: backfill },
           { code: 'created', backfillId: backfill.id },
         )
-        this.startPolling()
+        if (this._backfillEnabled) this.startPolling()
+        this.creationSettled()
       },
       (error) => {
-        this.creatingBackfills--
         this.backfills._error({ code: 'create_failed', detail: error })
+        this.creationSettled()
       },
     )
   }
