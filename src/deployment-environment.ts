@@ -64,6 +64,25 @@ export const tryParseEnvVariableBool = (key: string, value: string | undefined):
 export const tryParseEnvVariableJSON = <V>(key: string, value: string | undefined): V | null =>
   tryParseEnvVariable<V | null>(key, value, (raw) => JSON.parse(raw) as V | null, null)
 
+/** Set by Edgegap only when private beacons are enabled. */
+const BEACON_VARIABLES = [
+  'ARBITRIUM_BEACON_ENABLED',
+  'ARBITRIUM_HOST_BEACON_PUBLIC_IP',
+  'ARBITRIUM_HOST_BEACON_PORT_UDP_EXTERNAL',
+  'ARBITRIUM_HOST_BEACON_PORT_TCP_EXTERNAL',
+]
+
+/** The private beacon variables count as missing only when `ARBITRIUM_BEACON_ENABLED` is `true`. */
+const missingVariables = (keys: string[], env: Env): string[] => {
+  const beaconEnabled = env['ARBITRIUM_BEACON_ENABLED'] === 'true'
+  return keys.filter(
+    (key) =>
+      env[key] === undefined &&
+      key !== 'ARBITRIUM_BEACON_ENABLED' &&
+      (beaconEnabled || !BEACON_VARIABLES.includes(key)),
+  )
+}
+
 const fromEnv = (env: Env): DeploymentEnvironment => {
   const result: Omit<DeploymentEnvironment, 'fqdn'> = {
     requestId: null,
@@ -108,7 +127,7 @@ const fromEnv = (env: Env): DeploymentEnvironment => {
 
   Object.entries(env).forEach(([key, value]) => parsers.get(key)?.(key, value))
 
-  const missing = [...parsers.keys()].filter((key) => env[key] === undefined)
+  const missing = missingVariables([...parsers.keys()], env)
   if (missing.length > 0) {
     Logger.warn(
       `Edgegap Env | Missing variables ${missing.join(', ')}. This is expected when running outside an Edgegap deployment.`,

@@ -124,6 +124,21 @@ describe('DeploymentEnvironment.fromEnv', () => {
     expect(warn).toHaveBeenCalledOnce()
   })
 
+  it('treats the private beacon variables as optional unless private beacons are enabled', () => {
+    const withoutBeacons = Object.fromEntries(Object.entries(MOCK_ENV).filter(([key]) => !key.includes('BEACON')))
+
+    const env = DeploymentEnvironment.fromEnv(withoutBeacons)
+    expect(env.privateBeaconEnabled).toBe(false)
+    expect(warn).not.toHaveBeenCalled()
+
+    DeploymentEnvironment.fromEnv({ ...withoutBeacons, ARBITRIUM_BEACON_ENABLED: 'true' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Missing variables ARBITRIUM_HOST_BEACON_PUBLIC_IP, ARBITRIUM_HOST_BEACON_PORT_UDP_EXTERNAL, ARBITRIUM_HOST_BEACON_PORT_TCP_EXTERNAL.',
+      ),
+    )
+  })
+
   it('warns once listing every missing variable, and continues for local runs', () => {
     const env = DeploymentEnvironment.fromEnv({ PATH: '/usr/bin' })
 
@@ -133,7 +148,7 @@ describe('DeploymentEnvironment.fromEnv', () => {
     expect(warn).toHaveBeenCalledWith(
       '⚠️ Edgegap Edgegap Env | Missing variables ' +
         Object.keys(MOCK_ENV)
-          .filter((key) => key.startsWith('ARBITRIUM_'))
+          .filter((key) => key.startsWith('ARBITRIUM_') && !key.includes('BEACON'))
           .join(', ') +
         '. This is expected when running outside an Edgegap deployment.',
     )

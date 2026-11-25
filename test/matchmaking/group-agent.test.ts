@@ -273,6 +273,39 @@ describe('GroupAgent', () => {
     })
   })
 
+  describe('resume ownership', () => {
+    it('a resumed owner deletes the group on stop', async () => {
+      server.on('DELETE /groups/g1/members/m1', { status: 409, body: { message: 'owner' } })
+      const { agent } = start()
+
+      agent.resumeMatchmaking(member(), false, true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(agent.owner).toBe(true)
+      agent.stopMatchmaking()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(server.count('DELETE /groups/g1')).toBe(1)
+      expect(server.count('DELETE /groups/g1/members/m1')).toBe(0)
+      expect(agent.group.current).toBeNull()
+    })
+
+    it('a resumed group defaults to member, even after owning an earlier group', async () => {
+      server.on('DELETE /groups/g1/members/m1', { status: 204 })
+      const { agent } = start()
+      agent.createGroup(REQUEST, true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(agent.owner).toBe(true)
+
+      agent.resumeMatchmaking(member(), true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(agent.owner).toBe(false)
+      agent.stopMatchmaking()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(server.count('DELETE /groups/g1/members/m1')).toBe(1)
+    })
+  })
+
   describe('stopMatchmaking', () => {
     const created = async () => {
       const started = start()
@@ -485,12 +518,25 @@ describe('GroupAgent', () => {
       expect(ping.measure).toHaveBeenCalledWith(expect.objectContaining({ public_ip: '1.1.1.1' }), 5)
     })
 
-    it('reports 0 for every city by default', async () => {
+    it('leaves every city out by default, since browsers measure nothing', async () => {
       const { agent } = start()
 
-      await expect(agent.measureBeaconsRoundTripTime([beacon('Chicago', '1.1.1.1')])).resolves.toEqual({
-        Chicago: 0,
-      })
+      await expect(agent.measureBeaconsRoundTripTime([beacon('Chicago', '1.1.1.1')])).resolves.toEqual({})
+    })
+
+    it('leaves out beacons without a measurement instead of reporting 0', async () => {
+      const results: Record<string, number | null> = { '1.1.1.1': 20, '2.2.2.2': null, '3.3.3.3': 0, '4.4.4.4': NaN }
+      const ping = { measure: vi.fn(async (b: BeaconDTO) => results[b.public_ip]!) }
+      const { agent } = start({ ping })
+
+      const latencies = await agent.measureBeaconsRoundTripTime([
+        beacon('Chicago', '1.1.1.1'),
+        beacon('Dubai', '2.2.2.2'),
+        beacon('Paris', '3.3.3.3'),
+        beacon('Tokyo', '4.4.4.4'),
+      ])
+
+      expect(latencies).toEqual({ Chicago: 20 })
     })
   })
 

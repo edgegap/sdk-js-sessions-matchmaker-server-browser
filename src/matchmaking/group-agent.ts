@@ -113,10 +113,15 @@ export class GroupAgent<A = unknown> {
     const unique = beacons.filter(
       (beacon, index) => beacons.findIndex((b) => b.location.city === beacon.location.city) === index,
     )
+    const measured = await Promise.all(
+      unique.map(async (beacon) => [beacon.location.city, await this.ping.measure(beacon, requests)] as const),
+    )
+    // A beacon without a measurement is left out, never reported as 0 (the best latency).
     return Object.fromEntries(
-      await Promise.all(
-        unique.map(async (beacon) => [beacon.location.city, await this.ping.measure(beacon, requests)]),
-      ),
+      measured.filter((entry): entry is readonly [string, number] => {
+        const rtt = entry[1]
+        return typeof rtt === 'number' && Number.isFinite(rtt) && rtt > 0
+      }),
     )
   }
 
@@ -142,13 +147,18 @@ export class GroupAgent<A = unknown> {
     })
   }
 
-  resumeMatchmaking(group: GroupUpResponseDTO, abandon = false): void {
+  /**
+   * Resumes polling a group saved earlier. Pass `owner` true when this player owns the group (save
+   * `agent.owner` with it), so `stopMatchmaking` deletes the group instead of leaving it.
+   */
+  resumeMatchmaking(group: GroupUpResponseDTO, abandon = false, owner = false): void {
     if (this.group.current !== null && !abandon) {
       this.group._error({ code: 'conflict' })
       return
     }
 
     this.stopMatchmaking(() => {
+      this._owner = owner
       this.group._update(group, { code: 'resumed' })
       this.pollGroup(this.session.signal)
     })
