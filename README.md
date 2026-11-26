@@ -478,11 +478,11 @@ The other tests never ready a full group, so they don't start deployments.
 Maintainers release from `main`:
 
 1. Bump `version` in `package.json` with `npm version <major|minor|patch> --no-git-tag-version`, and commit it.
-2. Create an annotated tag matching the version, with the release notes as its message, and push it. `--cleanup=verbatim` keeps Markdown headings, which git otherwise strips as comments:
+2. Create an annotated tag matching the version, without a `v` prefix, with the release notes as its message, and push it. `--cleanup=verbatim` keeps Markdown headings, which git otherwise strips as comments:
 
    ```sh
-   git tag -a v1.1.0 --cleanup=verbatim -F release-notes.md
-   git push origin v1.1.0
+   git tag -a 1.1.0 --cleanup=verbatim -F release-notes.md
+   git push origin 1.1.0
    ```
 
 3. The [release workflow](.github/workflows/release.yml) checks the tag, runs the checks, publishes to npm with provenance, and creates the GitHub release from the tag message.
