@@ -59,7 +59,7 @@ The package has two entry points:
 Load the browser build from a CDN. It exposes everything under the `Edgegap` global, with Matchmaking under `Edgegap.matchmaking`:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.2.0/dist/browser/edgegap.iife.js"></script>
 <script>
   const agent = new Edgegap.matchmaking.GroupAgent({ baseUrl: '...', authToken: '...' })
 </script>
@@ -69,7 +69,7 @@ Or as an ES module:
 
 ```html
 <script type="module">
-  import { matchmaking, getConnectionUrl } from 'https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.js'
+  import { matchmaking, getConnectionUrl } from 'https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.2.0/dist/browser/edgegap.js'
 </script>
 ```
 
@@ -95,12 +95,12 @@ npm audit signatures
 When loading the SDK from a CDN, pin an exact version and add a [Subresource Integrity](https://developer.mozilla.org/docs/Web/Security/Subresource_Integrity) hash, so the browser refuses a modified file:
 
 ```sh
-curl -s https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js | openssl dgst -sha384 -binary | openssl base64 -A
+curl -s https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.2.0/dist/browser/edgegap.iife.js | openssl dgst -sha384 -binary | openssl base64 -A
 ```
 
 ```html
 <script
-  src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.1.0/dist/browser/edgegap.iife.js"
+  src="https://cdn.jsdelivr.net/npm/@edgegap/sdk@1.2.0/dist/browser/edgegap.iife.js"
   integrity="sha384-<hash from the command above>"
   crossorigin="anonymous"
 ></script>
